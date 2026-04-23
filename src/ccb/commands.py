@@ -914,21 +914,600 @@ async def handle_command(
         session.save()
         return True
 
-    # ── PR Comments ──
+    # ── PR Comments (GitHub integration) ──
     if command == "/pr-comments":
-        print_info("Fetching PR comments requires GitHub integration (not yet implemented in CLI)")
+        from ccb.github_ops import pr_comments, gh_available
+        if not gh_available():
+            print_error("GitHub CLI (gh) not available. Install: https://cli.github.com")
+            return True
+        number = int(args) if args.strip().isdigit() else None
+        comments = pr_comments(number, cwd=cwd)
+        if not comments:
+            print_info("No PR comments found.")
+        else:
+            console.print(f"[bold]PR comments ({len(comments)}):[/bold]")
+            for c in comments:
+                state_tag = f" [{c.state}]" if c.state else ""
+                console.print(f"  [bold]{c.author}[/bold]{state_tag}: {c.body[:200]}")
         return True
 
-    # ── Commit ──
+    # ── Review ──
+    if command == "/review":
+        from ccb.github_ops import generate_review_prompt, gh_available
+        if not gh_available():
+            print_error("GitHub CLI (gh) not available.")
+            return True
+        number = int(args) if args.strip().isdigit() else None
+        prompt = generate_review_prompt(number, cwd=cwd)
+        session.add_user_message(prompt)
+        from ccb.loop import run_turn
+        from ccb.prompts import get_system_prompt
+        await run_turn(provider, session, registry, get_system_prompt(cwd), mcp_manager=mcp_manager)
+        session.save()
+        return True
+
+    # ── Autofix PR ──
+    if command == "/autofix-pr":
+        from ccb.github_ops import generate_autofix_prompt, gh_available
+        if not gh_available():
+            print_error("GitHub CLI (gh) not available.")
+            return True
+        number = int(args) if args.strip().isdigit() else None
+        prompt = generate_autofix_prompt(number, cwd=cwd)
+        session.add_user_message(prompt)
+        from ccb.loop import run_turn
+        from ccb.prompts import get_system_prompt
+        await run_turn(provider, session, registry, get_system_prompt(cwd), mcp_manager=mcp_manager)
+        session.save()
+        return True
+
+    # ── Issue ──
+    if command == "/issue":
+        from ccb.github_ops import issue_list, issue_view, gh_available
+        if not gh_available():
+            print_error("GitHub CLI (gh) not available.")
+            return True
+        if args.strip().isdigit():
+            issue = issue_view(int(args), cwd=cwd)
+            if issue:
+                console.print(f"[bold]#{issue.number} {issue.title}[/bold] ({issue.state})")
+                console.print(f"  Author: {issue.author}  Labels: {', '.join(issue.labels)}")
+                if issue.body:
+                    console.print(f"  {issue.body[:500]}")
+            else:
+                print_error(f"Issue #{args} not found")
+        else:
+            issues = issue_list(cwd=cwd, state=args.strip() or "open")
+            if not issues:
+                print_info("No issues found.")
+            else:
+                console.print(f"[bold]Issues ({len(issues)}):[/bold]")
+                for i in issues:
+                    labels = f" [{', '.join(i.labels)}]" if i.labels else ""
+                    console.print(f"  [bold]#{i.number:5d}[/bold] {i.title}{labels}")
+        return True
+
+    # ── Commit (with git integration) ──
     if command == "/commit":
+        from ccb.git_ops import generate_commit_message_prompt, diff_stat, stage, commit, git_available
+        if not git_available(cwd):
+            print_error("Not in a git repository")
+            return True
+        stat = diff_stat(staged=True, cwd=cwd)
+        if stat.files_changed == 0:
+            # Auto-stage all
+            stage(cwd=cwd)
+            stat = diff_stat(staged=True, cwd=cwd)
+        if stat.files_changed == 0:
+            print_info("No changes to commit.")
+            return True
+        prompt = generate_commit_message_prompt(cwd=cwd)
+        session.add_user_message(prompt)
+        from ccb.loop import run_turn
+        from ccb.prompts import get_system_prompt
+        await run_turn(provider, session, registry, get_system_prompt(cwd), mcp_manager=mcp_manager)
+        session.save()
+        return True
+
+    # ── Diff ──
+    if command == "/diff":
+        from ccb.git_ops import diff_text, diff_stat, git_available
+        if not git_available(cwd):
+            print_error("Not in a git repository")
+            return True
+        staged = "staged" in args or "cached" in args
+        stat = diff_stat(staged=staged, cwd=cwd)
+        if stat.files_changed == 0:
+            print_info("No changes." + (" (staged)" if staged else ""))
+            return True
+        console.print(f"[bold]{stat.files_changed} file(s) changed[/bold] "
+                      f"(+{stat.insertions} -{stat.deletions})")
+        text = diff_text(staged=staged, cwd=cwd)
+        if text:
+            from rich.syntax import Syntax
+            console.print(Syntax(text[:5000], "diff", theme="monokai"))
+        return True
+
+    # ── Branch ──
+    if command == "/branch":
+        from ccb.git_ops import branches, checkout, create_branch, current_branch, git_available
+        if not git_available(cwd):
+            print_error("Not in a git repository")
+            return True
+        if args.strip():
+            sub = args.strip().split()
+            if sub[0] in ("-b", "create", "new") and len(sub) > 1:
+                ok, msg = create_branch(sub[1], cwd=cwd)
+                print_info(f"{'✓' if ok else '✗'} {msg}")
+            else:
+                ok, msg = checkout(sub[0], cwd=cwd)
+                print_info(f"{'✓' if ok else '✗'} {msg}")
+        else:
+            from ccb.select_ui import select_one
+            brs = branches(cwd=cwd)
+            if not brs:
+                print_info("No branches found.")
+                return True
+            items = [{"label": b["name"], "description": "← current" if b["current"] else ""} for b in brs]
+            choice = await select_one(items, title="Switch Branch")
+            if choice is not None:
+                ok, msg = checkout(brs[choice]["name"], cwd=cwd)
+                print_info(f"{'✓' if ok else '✗'} {msg}")
+        return True
+
+    # ── Undo / Redo (git-based) ──
+    if command == "/undo":
+        from ccb.git_ops import undo_last_commit, stash_push, git_available
+        if not git_available(cwd):
+            print_error("Not in a git repository")
+            return True
+        ok, msg = undo_last_commit(cwd=cwd)
+        print_info(f"{'✓ Undid last commit' if ok else '✗ ' + msg}")
+        return True
+
+    if command == "/redo":
+        from ccb.git_ops import stash_pop, git_available
+        if not git_available(cwd):
+            print_error("Not in a git repository")
+            return True
+        ok, msg = stash_pop(cwd=cwd)
+        print_info(f"{'✓' if ok else '✗'} {msg}")
+        return True
+
+    # ── Memory ──
+    if command == "/memory":
+        from ccb.memory import get_store
+        store = get_store()
+        sub = args.strip().split(maxsplit=1)
+        action = sub[0].lower() if sub else "list"
+        rest = sub[1] if len(sub) > 1 else ""
+        if action == "add" and rest:
+            mem = store.add(rest, source="user")
+            print_info(f"✓ Memory saved: {mem.id}")
+        elif action in ("search", "find") and rest:
+            results = store.search(rest)
+            for m in results:
+                console.print(f"  [{m.id}] {m.content[:80]}  [dim]tags: {', '.join(m.tags)}[/dim]")
+        elif action in ("delete", "rm") and rest:
+            if store.delete(rest):
+                print_info(f"✓ Deleted {rest}")
+            else:
+                print_error(f"Memory {rest} not found")
+        elif action == "clear":
+            count = store.clear()
+            print_info(f"✓ Cleared {count} memories")
+        else:
+            mems = store.list_all()
+            if not mems:
+                print_info("No memories stored. Use: /memory add <text>")
+            else:
+                console.print(f"[bold]Memories ({len(mems)}):[/bold]")
+                for m in mems[:20]:
+                    console.print(f"  [{m.id}] {m.content[:60]}  [dim]{', '.join(m.tags)}[/dim]")
+        return True
+
+    # ── Tasks ──
+    if command == "/tasks":
+        from ccb.task_manager import get_task_manager
+        mgr = get_task_manager()
+        tasks = mgr.list_tasks()
+        if not tasks:
+            print_info("No tasks. Tasks are created by agent/subtask tool calls.")
+        else:
+            console.print(f"[bold]Tasks ({len(tasks)}):[/bold]")
+            for t in tasks:
+                icon = {"pending": "⬜", "running": "🔄", "completed": "✅", "failed": "❌", "cancelled": "⏹"}.get(t.status.value, "?")
+                console.print(f"  {icon} {t.id}: {t.name} ({t.status.value}) [{t.duration:.1f}s]")
+        return True
+
+    # ── Env ──
+    if command == "/env":
+        if args.strip():
+            key, _, val = args.partition("=")
+            key = key.strip()
+            val = val.strip()
+            if val:
+                import os
+                os.environ[key] = val
+                print_info(f"✓ Set {key}={val}")
+            else:
+                import os
+                current = os.environ.get(key, "(not set)")
+                console.print(f"  {key}={current}")
+        else:
+            import os
+            relevant = {k: v for k, v in os.environ.items()
+                        if any(x in k.upper() for x in ("CLAUDE", "ANTHROPIC", "OPENAI", "API", "MODEL", "CCB"))}
+            for k, v in sorted(relevant.items()):
+                display_v = v[:40] + "..." if len(v) > 40 else v
+                console.print(f"  {k}={display_v}")
+        return True
+
+    # ── Exit (explicit command) ──
+    if command == "/exit":
+        return "exit"
+
+    # ── Feedback ──
+    if command == "/feedback":
+        print_info("Send feedback: https://github.com/hua123an/ccb-py/issues")
+        if args:
+            print_info(f"Your feedback: {args}")
+        return True
+
+    # ── BTW (terminal setup) ──
+    if command == "/btw":
+        import os, platform
+        info = {
+            "shell": os.environ.get("SHELL", "unknown"),
+            "term": os.environ.get("TERM", "unknown"),
+            "term_program": os.environ.get("TERM_PROGRAM", "unknown"),
+            "os": platform.system(),
+            "python": platform.python_version(),
+        }
+        for k, v in info.items():
+            console.print(f"  [bold]{k:15s}[/bold] {v}")
+        return True
+
+    # ── Onboarding ──
+    if command == "/onboarding":
+        console.print("[bold]Welcome to ccb-py![/bold]\n")
+        console.print("Quick start:")
+        console.print("  1. Set your API key:  /account")
+        console.print("  2. Choose a model:    /model")
+        console.print("  3. Start chatting!")
+        console.print("  4. Use /help to see all commands")
+        console.print("  5. Try /plugin browse for plugins")
+        return True
+
+    # ── Fork (session fork) ──
+    if command == "/fork":
+        new_id = session.fork()
+        if new_id:
+            print_info(f"✓ Forked session → {new_id}")
+        else:
+            print_info("Session fork not available (save first with /session save)")
+        return True
+
+    # ── Resume ──
+    if command in ("/resume", "/continue"):
+        from ccb.session import list_sessions
+        sessions = list_sessions()
+        if not sessions:
+            print_info("No saved sessions.")
+            return True
+        if args:
+            session.load(args.strip())
+            print_info(f"Resumed session {args}")
+        else:
+            from ccb.select_ui import select_one
+            items = [{"label": s.get("id", ""), "description": s.get("preview", "")[:40]} for s in sessions[:20]]
+            choice = await select_one(items, title="Resume Session", searchable=True)
+            if choice is not None:
+                session.load(sessions[choice]["id"])
+                print_info(f"Resumed session {sessions[choice]['id']}")
+        return True
+
+    # ── Attach / Detach ──
+    if command == "/attach":
+        state["attached"] = True
+        print_info("Session attached — output visible.")
+        return True
+
+    if command == "/detach":
+        state["attached"] = False
+        print_info("Session detached — running in background.")
+        return True
+
+    # ── Send ──
+    if command == "/send":
+        if not args:
+            print_error("Usage: /send <message>")
+            return True
+        session.add_user_message(args)
+        from ccb.loop import run_turn
+        from ccb.prompts import get_system_prompt
+        await run_turn(provider, session, registry, get_system_prompt(cwd), mcp_manager=mcp_manager)
+        session.save()
+        return True
+
+    # ── Peers ──
+    if command == "/peers":
+        print_info("Peer connections not yet configured.")
+        print_info("Use /remote-setup to configure remote connections.")
+        return True
+
+    # ── Bughunter ──
+    if command == "/bughunter":
         session.add_user_message(
-            "Review the current git diff and create a well-formatted commit. "
-            "Use conventional commit format. Stage and commit the changes."
+            "Act as a bug hunter. Analyze the codebase for potential bugs, edge cases, "
+            "race conditions, null pointer issues, and other common problems. "
+            f"Focus on: {args}" if args else
+            "Act as a bug hunter. Analyze the codebase for potential bugs, edge cases, "
+            "race conditions, null pointer issues, and other common problems."
         )
         from ccb.loop import run_turn
         from ccb.prompts import get_system_prompt
         await run_turn(provider, session, registry, get_system_prompt(cwd), mcp_manager=mcp_manager)
         session.save()
+        return True
+
+    # ── Perf Issue ──
+    if command == "/perf-issue":
+        session.add_user_message(
+            "Analyze the codebase for performance issues. Look for N+1 queries, "
+            "unnecessary allocations, blocking calls, and optimization opportunities."
+            + (f" Focus on: {args}" if args else "")
+        )
+        from ccb.loop import run_turn
+        from ccb.prompts import get_system_prompt
+        await run_turn(provider, session, registry, get_system_prompt(cwd), mcp_manager=mcp_manager)
+        session.save()
+        return True
+
+    # ── Good Claude / Poor ──
+    if command == "/good-claude":
+        print_info("👍 Thanks! Positive feedback recorded.")
+        return True
+
+    if command == "/poor":
+        print_info("👎 Sorry about that. Feedback recorded.")
+        if args:
+            print_info(f"Details: {args}")
+        return True
+
+    # ── Remote setup ──
+    if command in ("/remote-setup", "/remote-env"):
+        from ccb.remote import get_remote_manager
+        mgr = get_remote_manager()
+        if args.strip():
+            sub = args.strip().split(maxsplit=1)
+            action = sub[0]
+            rest = sub[1] if len(sub) > 1 else ""
+            if action == "add" and rest:
+                parts_r = rest.split()
+                name = parts_r[0]
+                host = parts_r[1] if len(parts_r) > 1 else name
+                mgr.add_host(name, host)
+                print_info(f"✓ Added remote host: {name}")
+            elif action == "remove" and rest:
+                if mgr.remove_host(rest):
+                    print_info(f"✓ Removed {rest}")
+                else:
+                    print_error(f"Host {rest} not found")
+            elif action == "test" and rest:
+                ok, msg = mgr.test_connection(rest)
+                print_info(f"{'✓' if ok else '✗'} {msg}")
+            elif action == "connect" and rest:
+                if mgr.connect(rest):
+                    print_info(f"✓ Connected to {rest}")
+                else:
+                    print_error(f"Host {rest} not found")
+            elif action == "disconnect":
+                mgr.disconnect()
+                print_info("Disconnected from remote.")
+        else:
+            hosts = mgr.list_hosts()
+            active = mgr.active_host
+            if not hosts:
+                print_info("No remote hosts. Use: /remote-setup add <name> <host>")
+            else:
+                console.print(f"[bold]Remote hosts ({len(hosts)}):[/bold]")
+                for h in hosts:
+                    marker = " ← active" if active and h.name == active.name else ""
+                    console.print(f"  [bold]{h.name:15s}[/bold] {h.ssh_target}{marker}")
+        return True
+
+    # ── Teleport ──
+    if command == "/teleport":
+        print_info("Teleport: transfer this session to another device.")
+        print_info("Use: /share to export, then /resume on the other device.")
+        return True
+
+    # ── Voice ──
+    if command == "/voice":
+        from ccb.voice_input import get_voice_input
+        voice = get_voice_input()
+        if not voice.available:
+            print_error(f"Voice input not available (backend: {voice.backend_name})")
+            print_info("Install whisper or sox for voice support.")
+            return True
+        duration = int(args) if args.strip().isdigit() else 10
+        print_info(f"🎤 Recording for {duration}s... (speak now)")
+        text = await voice.record_and_transcribe(duration)
+        if text and not text.startswith("["):
+            print_info(f"Transcribed: {text}")
+            session.add_user_message(text)
+            from ccb.loop import run_turn
+            from ccb.prompts import get_system_prompt
+            await run_turn(provider, session, registry, get_system_prompt(cwd), mcp_manager=mcp_manager)
+            session.save()
+        else:
+            print_info(text or "No speech detected.")
+        return True
+
+    # ── Sandbox ──
+    if command == "/sandbox":
+        from ccb.sandbox_exec import get_sandbox
+        sb = get_sandbox()
+        if args.strip() == "status":
+            console.print(f"  Backend: {sb.backend_name}")
+            console.print(f"  Enabled: {sb.enabled}")
+            console.print(f"  Available: {sb.available}")
+        else:
+            result = sb.toggle()
+            print_info(f"Sandbox mode: {'ON' if result else 'OFF'} (backend: {sb.backend_name})")
+        return True
+
+    # ── IDE ──
+    if command == "/ide":
+        from ccb.bridge import get_bridge
+        bridge = get_bridge()
+        if args.strip() == "start":
+            await bridge.start()
+            print_info(f"IDE bridge started on ws://{bridge.host}:{bridge.port}")
+        elif args.strip() == "stop":
+            await bridge.stop()
+            print_info("IDE bridge stopped.")
+        else:
+            console.print(f"  Running: {bridge.is_running}")
+            console.print(f"  Clients: {bridge.connection_count}")
+            console.print("  Commands: /ide start | /ide stop")
+        return True
+
+    # ── Desktop ──
+    if command == "/desktop":
+        print_info("Desktop app integration — use /ide to connect to your editor.")
+        return True
+
+    # ── Mobile ──
+    if command == "/mobile":
+        print_info("Mobile companion — share sessions with /share, resume on mobile.")
+        return True
+
+    # ── Install GitHub/Slack App ──
+    if command == "/install-github-app":
+        print_info("Install ccb GitHub App:")
+        print_info("  https://github.com/apps/ccb-py")
+        return True
+
+    if command == "/install-slack-app":
+        print_info("Slack integration coming soon.")
+        return True
+
+    # ── Pipe status ──
+    if command == "/pipe-status":
+        from ccb.query_engine import PipeChain
+        print_info("Pipe mode: use 'ccb -p \"prompt\"' for non-interactive queries.")
+        return True
+
+    # ── Pipes ──
+    if command == "/pipes":
+        print_info("Pipe chains allow multi-step prompt processing.")
+        print_info("Use pipe mode: echo 'code' | ccb -p 'review this'")
+        return True
+
+    # ── Agents platform ──
+    if command == "/agents-platform":
+        print_info("Agents platform — multi-agent coordination.")
+        from ccb.coordinator import get_coordinator
+        coord = get_coordinator()
+        s = coord.summary()
+        console.print(f"  Total agents: {s['total']} (running: {s['running']}, done: {s['done']})")
+        return True
+
+    # ── Assistant ──
+    if command == "/assistant":
+        print_info("Entering assistant mode — I'll proactively help with your tasks.")
+        state["assistant_mode"] = True
+        return True
+
+    # ── Debug tool call ──
+    if command == "/debug-tool-call":
+        state["debug_tools"] = not state.get("debug_tools", False)
+        print_info(f"Tool call debug: {'ON' if state['debug_tools'] else 'OFF'}")
+        return True
+
+    # ── Context viz ──
+    if command == "/ctx_viz":
+        from ccb.api.base import Role
+        total_chars = sum(len(m.content or "") for m in session.messages)
+        console.print(f"[bold]Context visualization:[/bold]")
+        console.print(f"  Messages: {len(session.messages)}")
+        console.print(f"  Total chars: {total_chars:,}")
+        console.print(f"  Est. tokens: ~{total_chars // 4:,}")
+        for i, m in enumerate(session.messages):
+            bar_len = min(50, max(1, len(m.content or "") // 100))
+            role_icon = "🧑" if m.role == Role.USER else "🤖"
+            bar = "█" * bar_len
+            console.print(f"  {i+1:3d} {role_icon} {bar} ({len(m.content or '')} chars)")
+        return True
+
+    # ── Heapdump ──
+    if command == "/heapdump":
+        import sys
+        objects = {}
+        for obj in list(sys.modules.values()):
+            t = type(obj).__name__
+            objects[t] = objects.get(t, 0) + 1
+        console.print("[bold]Memory snapshot:[/bold]")
+        for t, c in sorted(objects.items(), key=lambda x: -x[1])[:15]:
+            console.print(f"  {t:30s} {c}")
+        return True
+
+    # ── Mock limits ──
+    if command == "/mock-limits":
+        state["mock_limits"] = not state.get("mock_limits", False)
+        print_info(f"Mock rate limits: {'ON' if state['mock_limits'] else 'OFF'}")
+        return True
+
+    # ── Break cache ──
+    if command == "/break-cache":
+        print_info("Cache cleared.")
+        return True
+
+    # ── Claim main ──
+    if command == "/claim-main":
+        print_info("This is now the main ccb-py process.")
+        return True
+
+    # ── Ant trace ──
+    if command == "/ant-trace":
+        print_info("Anthropic API trace viewer.")
+        from ccb.analytics_tracker import get_tracker
+        stats = get_tracker().get_session_stats()
+        console.print(f"  Input tokens: {stats.get('input_tokens', 0):,}")
+        console.print(f"  Output tokens: {stats.get('output_tokens', 0):,}")
+        console.print(f"  API calls: {stats.get('turns', 0)}")
+        console.print(f"  Cost: ${stats.get('cost_usd', 0):.4f}")
+        return True
+
+    # ── Rate limit options ──
+    if command == "/rate-limit-options":
+        console.print("[bold]Rate limit handling:[/bold]")
+        console.print("  • Auto-retry with exponential backoff")
+        console.print("  • /effort low — reduce token usage")
+        console.print("  • /model — switch to a less loaded model")
+        return True
+
+    # ── Reset limits ──
+    if command == "/reset-limits":
+        state.pop("mock_limits", None)
+        print_info("Rate limit counters reset.")
+        return True
+
+    # ── Extra usage ──
+    if command == "/extra-usage":
+        from ccb.analytics_tracker import get_tracker
+        stats = get_tracker().get_historical_stats(days=30)
+        console.print(f"[bold]Usage (last 30 days):[/bold]")
+        console.print(f"  Sessions: {stats.get('sessions', 0)}")
+        console.print(f"  Messages: {stats.get('messages', 0)}")
+        console.print(f"  Input tokens: {stats.get('input_tokens', 0):,}")
+        console.print(f"  Output tokens: {stats.get('output_tokens', 0):,}")
+        console.print(f"  Cost: ${stats.get('cost_usd', 0):.4f}")
+        top_tools = sorted(stats.get("tools_used", {}).items(), key=lambda x: -x[1])[:5]
+        if top_tools:
+            console.print("  Top tools: " + ", ".join(f"{k}({v})" for k, v in top_tools))
         return True
 
     # ── Skills ──

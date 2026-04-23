@@ -6,6 +6,7 @@ Provides structured summarization with <analysis>+<summary> format,
 from __future__ import annotations
 
 import re
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Analysis instruction (shared preamble for the LLM's drafting step)
@@ -204,3 +205,115 @@ def get_compact_user_message(summary: str, suppress_follow_up: bool = False) -> 
         )
 
     return base
+
+
+# ---------------------------------------------------------------------------
+# Multi-round progressive compaction
+# ---------------------------------------------------------------------------
+
+class CompactEngine:
+    """Advanced compaction with multi-round and tool-prompt slimming."""
+
+    def __init__(self, provider: Any = None) -> None:
+        self._provider = provider
+        self._round = 0
+        self._history: list[str] = []
+
+    async def compact_progressive(
+        self,
+        messages: list[Any],
+        max_rounds: int = 3,
+        target_ratio: float = 0.3,
+        custom_instructions: str = "",
+    ) -> str:
+        """Multi-round progressive compaction.
+
+        Each round summarizes the previous summary + new context until
+        the target compression ratio is reached.
+        """
+        from ccb.api.base import Message, Role
+
+        full_text = "\n".join(
+            f"[{m.role.value}]: {m.content[:2000]}" for m in messages if m.content
+        )
+        original_len = len(full_text)
+        current = full_text
+
+        for round_num in range(max_rounds):
+            self._round = round_num + 1
+            prompt = get_compact_prompt(custom_instructions)
+            if round_num > 0:
+                prompt = (
+                    f"This is round {round_num + 1} of progressive compaction.\n"
+                    f"The previous summary is below. Please create an even more "
+                    f"concise version while preserving all critical technical details.\n\n"
+                    f"Previous summary:\n{current}\n\n" + prompt
+                )
+
+            if self._provider:
+                summary_messages = [Message(role=Role.USER, content=f"{current}\n\n{prompt}")]
+                result = ""
+                async for event in self._provider.stream(
+                    messages=summary_messages,
+                    tools=[],
+                    system=get_compact_system(),
+                    max_tokens=4096,
+                ):
+                    if event.type == "text":
+                        result += event.text
+                current = format_compact_summary(result)
+            else:
+                # Without provider, just truncate
+                current = current[:int(len(current) * target_ratio)]
+
+            self._history.append(current)
+
+            # Check if we've hit target ratio
+            if len(current) / original_len <= target_ratio:
+                break
+
+        return current
+
+    def slim_tool_prompts(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Reduce tool prompt verbosity to save context tokens."""
+        slimmed = []
+        for tool in tools:
+            slim = dict(tool)
+            desc = slim.get("description", "")
+            if len(desc) > 200:
+                # Keep first sentence + truncate
+                first_period = desc.find(". ")
+                if first_period > 0 and first_period < 200:
+                    slim["description"] = desc[:first_period + 1]
+                else:
+                    slim["description"] = desc[:200] + "..."
+            # Slim input schema descriptions
+            schema = slim.get("input_schema", {})
+            props = schema.get("properties", {})
+            for prop_name, prop_val in props.items():
+                if isinstance(prop_val, dict) and len(prop_val.get("description", "")) > 100:
+                    prop_val["description"] = prop_val["description"][:100] + "..."
+            slimmed.append(slim)
+        return slimmed
+
+    def estimate_context_usage(self, messages: list[Any], tool_count: int = 0) -> dict[str, Any]:
+        """Estimate context window usage."""
+        msg_chars = sum(len(m.content or "") for m in messages)
+        msg_tokens_est = msg_chars // 4
+        tool_tokens_est = tool_count * 500  # rough estimate
+        total = msg_tokens_est + tool_tokens_est
+        return {
+            "message_tokens": msg_tokens_est,
+            "tool_tokens": tool_tokens_est,
+            "total_tokens": total,
+            "messages": len(messages),
+            "tools": tool_count,
+        }
+
+    @property
+    def rounds_completed(self) -> int:
+        return self._round
+
+    @property
+    def history(self) -> list[str]:
+        return self._history
