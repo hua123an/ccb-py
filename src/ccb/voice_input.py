@@ -167,6 +167,67 @@ class VoiceInput:
         return self._recording
 
 
+    # ── Configuration ──
+
+    def set_whisper_model(self, model: str) -> None:
+        """Set Whisper model size: tiny, base, small, medium, large."""
+        self._whisper_model = model
+
+    def set_language(self, language: str) -> None:
+        """Set transcription language (e.g. 'en', 'zh', 'ja')."""
+        self._language = language
+
+    def set_api_base(self, url: str) -> None:
+        """Set custom STT API base URL."""
+        self._api_base = url
+
+    # ── Continuous mode ──
+
+    async def continuous_listen(self, callback: Any, chunk_duration: int = 5, max_silence: int = 2) -> None:
+        """Continuously record and transcribe, calling callback with each chunk.
+
+        Stops when 'stop' is returned by callback or stop_recording() is called.
+        """
+        self._recording = True
+        try:
+            while self._recording:
+                audio_file = tempfile.mktemp(suffix=".wav")
+                try:
+                    await self._record(audio_file, chunk_duration)
+                    text = await self._transcribe(audio_file)
+                    if text.strip():
+                        result = await callback(text)
+                        if result == "stop":
+                            break
+                finally:
+                    try:
+                        os.unlink(audio_file)
+                    except OSError:
+                        pass
+        finally:
+            self._recording = False
+
+    # ── Push-to-talk ──
+
+    async def push_to_talk(self, max_duration: int = 30) -> str:
+        """Record while called, transcribe when done.
+
+        Used for push-to-talk where recording stops on function return.
+        """
+        return await self.record_and_transcribe(max_duration)
+
+    # ── Info ──
+
+    def info(self) -> dict[str, Any]:
+        return {
+            "backend": self._backend,
+            "available": self.available,
+            "recording": self._recording,
+            "whisper_model": getattr(self, "_whisper_model", "base"),
+            "language": getattr(self, "_language", "auto"),
+        }
+
+
 # Module singleton
 _voice: VoiceInput | None = None
 

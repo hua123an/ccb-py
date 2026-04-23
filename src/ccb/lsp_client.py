@@ -250,6 +250,127 @@ class LSPClient:
             for r in result
         ]
 
+    async def hover(self, path: str, line: int, column: int) -> str:
+        """Get hover info (type/docs) at a position."""
+        uri = f"file://{os.path.abspath(path)}"
+        result = await self._send_request("textDocument/hover", {
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": column},
+        })
+        if not result:
+            return ""
+        contents = result.get("contents", "")
+        if isinstance(contents, dict):
+            return contents.get("value", str(contents))
+        if isinstance(contents, list):
+            return "\n".join(
+                c.get("value", str(c)) if isinstance(c, dict) else str(c)
+                for c in contents
+            )
+        return str(contents)
+
+    async def document_symbols(self, path: str) -> list[dict[str, Any]]:
+        """Get all symbols in a document (functions, classes, etc)."""
+        uri = f"file://{os.path.abspath(path)}"
+        result = await self._send_request("textDocument/documentSymbol", {
+            "textDocument": {"uri": uri},
+        })
+        if not result:
+            return []
+        symbols = []
+        for s in result:
+            symbols.append({
+                "name": s.get("name", ""),
+                "kind": s.get("kind", 0),
+                "range": s.get("range", {}),
+                "children": len(s.get("children", [])),
+            })
+        return symbols
+
+    async def rename(self, path: str, line: int, column: int, new_name: str) -> dict[str, list[dict[str, Any]]]:
+        """Rename a symbol across files. Returns {path: [edits]}."""
+        uri = f"file://{os.path.abspath(path)}"
+        result = await self._send_request("textDocument/rename", {
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": column},
+            "newName": new_name,
+        })
+        if not result:
+            return {}
+        changes = result.get("changes", {})
+        edits: dict[str, list[dict[str, Any]]] = {}
+        for doc_uri, doc_edits in changes.items():
+            doc_path = doc_uri.replace("file://", "")
+            edits[doc_path] = [
+                {
+                    "range": e.get("range", {}),
+                    "newText": e.get("newText", ""),
+                }
+                for e in doc_edits
+            ]
+        return edits
+
+    async def format_document(self, path: str, tab_size: int = 4, insert_spaces: bool = True) -> list[dict[str, Any]]:
+        """Format a document. Returns list of text edits."""
+        uri = f"file://{os.path.abspath(path)}"
+        result = await self._send_request("textDocument/formatting", {
+            "textDocument": {"uri": uri},
+            "options": {"tabSize": tab_size, "insertSpaces": insert_spaces},
+        })
+        if not result:
+            return []
+        return [
+            {"range": e.get("range", {}), "newText": e.get("newText", "")}
+            for e in result
+        ]
+
+    async def code_action(self, path: str, start_line: int, end_line: int) -> list[dict[str, Any]]:
+        """Get available code actions (quick fixes, refactorings) for a range."""
+        uri = f"file://{os.path.abspath(path)}"
+        diags = self._diagnostics.get(os.path.abspath(path), [])
+        result = await self._send_request("textDocument/codeAction", {
+            "textDocument": {"uri": uri},
+            "range": {
+                "start": {"line": start_line, "character": 0},
+                "end": {"line": end_line, "character": 0},
+            },
+            "context": {
+                "diagnostics": [
+                    {"range": {"start": {"line": d.line, "character": d.column},
+                               "end": {"line": d.line, "character": d.column}},
+                     "message": d.message, "severity": ["", "error", "warning", "info", "hint"].index(d.severity) if d.severity in ["error", "warning", "info", "hint"] else 0}
+                    for d in diags if start_line <= d.line <= end_line
+                ],
+            },
+        })
+        if not result:
+            return []
+        return [{"title": a.get("title", ""), "kind": a.get("kind", "")} for a in result]
+
+    async def did_change(self, path: str, text: str, version: int = 2) -> None:
+        """Notify server of file content change."""
+        uri = f"file://{os.path.abspath(path)}"
+        await self._send_notification("textDocument/didChange", {
+            "textDocument": {"uri": uri, "version": version},
+            "contentChanges": [{"text": text}],
+        })
+
+    async def did_save(self, path: str) -> None:
+        uri = f"file://{os.path.abspath(path)}"
+        await self._send_notification("textDocument/didSave", {
+            "textDocument": {"uri": uri},
+        })
+
+    async def did_close(self, path: str) -> None:
+        uri = f"file://{os.path.abspath(path)}"
+        await self._send_notification("textDocument/didClose", {
+            "textDocument": {"uri": uri},
+        })
+
     @property
     def all_diagnostics(self) -> dict[str, list[Diagnostic]]:
         return self._diagnostics
+
+    @property
+    def is_running(self) -> bool:
+        return self._process is not None and self._initialized

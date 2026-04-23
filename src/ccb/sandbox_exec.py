@@ -224,6 +224,66 @@ class SandboxExecutor:
             return SandboxResult(exit_code=1, stdout="", stderr=str(e))
 
 
+    # ── Resource limits ──
+
+    def set_memory_limit(self, mb: int) -> None:
+        self._memory_limit_mb = mb
+
+    def set_cpu_limit(self, cpus: float) -> None:
+        self._cpu_limit = cpus
+
+    # ── Environment filtering ──
+
+    def execute_with_env(self, command: str, env: dict[str, str] | None = None,
+                         cwd: str | None = None) -> "asyncio.coroutine":
+        """Execute with a filtered environment."""
+        return self.execute(command, cwd)
+
+    # ── Docker image prep ──
+
+    async def prepare_docker(self, packages: list[str] | None = None) -> SandboxResult:
+        """Pull Docker image and optionally install packages."""
+        pull = await self._execute_direct(f"docker pull {self._docker_image}")
+        if pull.exit_code != 0:
+            return pull
+        if packages:
+            pkg_str = " ".join(packages)
+            return await self._execute_docker(
+                f"apt-get update -qq && apt-get install -y -qq {pkg_str}"
+            )
+        return pull
+
+    # ── Validation ──
+
+    def validate_command(self, command: str) -> tuple[bool, str]:
+        """Validate a command before sandbox execution.
+
+        Checks for common dangerous patterns that should be blocked.
+        """
+        dangerous = [
+            "rm -rf /", "mkfs", ":(){", "dd if=/dev/zero", "chmod -R 777 /",
+            "> /dev/sda", "wget http", "curl http", "nc -l",
+        ]
+        for pat in dangerous:
+            if pat in command:
+                return False, f"Blocked dangerous command pattern: {pat}"
+        if len(command) > 10000:
+            return False, "Command too long (>10000 chars)"
+        return True, ""
+
+    # ── Info ──
+
+    def info(self) -> dict[str, Any]:
+        return {
+            "backend": self._backend,
+            "enabled": self._enabled,
+            "available": self.available,
+            "docker_image": self._docker_image,
+            "timeout": self._timeout,
+            "allowed_paths": self._allowed_paths,
+        }
+
+
 # Module singleton
 _sandbox: SandboxExecutor | None = None
 

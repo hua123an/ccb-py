@@ -201,6 +201,126 @@ class RemoteManager:
         return hosts
 
 
+    # ── File transfer ──
+
+    def upload_file(self, local_path: str, remote_path: str, name: str | None = None) -> tuple[bool, str]:
+        """Upload a local file to the remote host via SCP."""
+        host_name = name or self._active
+        if not host_name:
+            return False, "No active remote host"
+        host = self._hosts.get(host_name)
+        if not host:
+            return False, f"Unknown host: {host_name}"
+
+        scp_cmd = ["scp"]
+        if host.port != 22:
+            scp_cmd += ["-P", str(host.port)]
+        if host.key_file:
+            scp_cmd += ["-i", host.key_file]
+        scp_cmd += [local_path, f"{host.ssh_target}:{remote_path}"]
+
+        try:
+            r = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=120)
+            return r.returncode == 0, (r.stdout + r.stderr).strip()
+        except subprocess.TimeoutExpired:
+            return False, "Upload timed out"
+        except FileNotFoundError:
+            return False, "scp not found"
+
+    def download_file(self, remote_path: str, local_path: str, name: str | None = None) -> tuple[bool, str]:
+        """Download a file from the remote host via SCP."""
+        host_name = name or self._active
+        if not host_name:
+            return False, "No active remote host"
+        host = self._hosts.get(host_name)
+        if not host:
+            return False, f"Unknown host: {host_name}"
+
+        scp_cmd = ["scp"]
+        if host.port != 22:
+            scp_cmd += ["-P", str(host.port)]
+        if host.key_file:
+            scp_cmd += ["-i", host.key_file]
+        scp_cmd += [f"{host.ssh_target}:{remote_path}", local_path]
+
+        try:
+            r = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=120)
+            return r.returncode == 0, (r.stdout + r.stderr).strip()
+        except subprocess.TimeoutExpired:
+            return False, "Download timed out"
+        except FileNotFoundError:
+            return False, "scp not found"
+
+    def read_remote_file(self, remote_path: str, name: str | None = None) -> str:
+        """Read a file on the remote host."""
+        rc, out, err = self.run_remote(f"cat {remote_path}", name)
+        return out if rc == 0 else f"Error: {err}"
+
+    def write_remote_file(self, remote_path: str, content: str, name: str | None = None) -> tuple[bool, str]:
+        """Write content to a file on the remote host."""
+        import shlex
+        escaped = shlex.quote(content)
+        rc, out, err = self.run_remote(f"echo {escaped} > {remote_path}", name)
+        return rc == 0, err if rc != 0 else "ok"
+
+    # ── Remote system info ──
+
+    def get_remote_info(self, name: str | None = None) -> dict[str, str]:
+        """Get OS and system info from remote host."""
+        rc, out, _ = self.run_remote("uname -a && whoami && pwd", name)
+        if rc != 0:
+            return {"error": "Failed to get info"}
+        lines = out.strip().splitlines()
+        return {
+            "uname": lines[0] if len(lines) > 0 else "",
+            "user": lines[1] if len(lines) > 1 else "",
+            "cwd": lines[2] if len(lines) > 2 else "",
+        }
+
+    def list_remote_files(self, path: str = ".", name: str | None = None) -> list[str]:
+        """List files on the remote host."""
+        rc, out, _ = self.run_remote(f"ls -la {path}", name)
+        return out.strip().splitlines() if rc == 0 else []
+
+    # ── Reverse tunnel ──
+
+    def create_reverse_tunnel(self, name: str, remote_port: int, local_port: int) -> subprocess.Popen | None:
+        """Create a reverse SSH tunnel (remote -> local)."""
+        host = self._hosts.get(name)
+        if not host:
+            return None
+        args = ["ssh", "-N", "-R", f"{remote_port}:localhost:{local_port}"]
+        if host.port != 22:
+            args += ["-p", str(host.port)]
+        if host.key_file:
+            args += ["-i", host.key_file]
+        args.append(host.ssh_target)
+        try:
+            return subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except Exception:
+            return None
+
+    # ── Import from SSH config ──
+
+    def import_from_ssh_config(self) -> int:
+        """Import hosts from ~/.ssh/config."""
+        entries = self.parse_ssh_config()
+        count = 0
+        for entry in entries:
+            name = entry.get("name", "")
+            if not name or name in self._hosts:
+                continue
+            self.add_host(
+                name=name,
+                host=entry.get("host", name),
+                user=entry.get("user", ""),
+                port=int(entry.get("port", "22")),
+                key_file=entry.get("key_file", ""),
+            )
+            count += 1
+        return count
+
+
 # Module singleton
 _manager: RemoteManager | None = None
 
