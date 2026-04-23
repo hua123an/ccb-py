@@ -296,3 +296,197 @@ def generate_autofix_prompt(number: int | None = None, cwd: str | None = None) -
         f"Current diff:\n```\n{diff[:10000]}\n```\n\n"
         "For each comment that requests a change, provide the fix."
     )
+
+
+# ---------------------------------------------------------------------------
+# PR merge / close / approve
+# ---------------------------------------------------------------------------
+
+def pr_merge(
+    number: int | None = None,
+    method: str = "merge",  # merge, squash, rebase
+    cwd: str | None = None,
+) -> tuple[bool, str]:
+    """Merge a PR."""
+    args = ["pr", "merge"]
+    if number:
+        args.append(str(number))
+    args.append(f"--{method}")
+    args.append("--auto")
+    rc, out, err = _gh(*args, cwd=cwd, timeout=60)
+    return rc == 0, (out + err).strip()
+
+
+def pr_close(number: int | None = None, cwd: str | None = None) -> tuple[bool, str]:
+    args = ["pr", "close"]
+    if number:
+        args.append(str(number))
+    rc, out, err = _gh(*args, cwd=cwd)
+    return rc == 0, (out + err).strip()
+
+
+def pr_reopen(number: int, cwd: str | None = None) -> tuple[bool, str]:
+    rc, out, err = _gh("pr", "reopen", str(number), cwd=cwd)
+    return rc == 0, (out + err).strip()
+
+
+def pr_review_submit(
+    number: int | None = None,
+    event: str = "APPROVE",  # APPROVE, REQUEST_CHANGES, COMMENT
+    body: str = "",
+    cwd: str | None = None,
+) -> tuple[bool, str]:
+    """Submit a PR review."""
+    args = ["pr", "review"]
+    if number:
+        args.append(str(number))
+    flag = {"APPROVE": "--approve", "REQUEST_CHANGES": "--request-changes",
+            "COMMENT": "--comment"}.get(event, "--comment")
+    args.append(flag)
+    if body:
+        args += ["--body", body]
+    rc, out, err = _gh(*args, cwd=cwd)
+    return rc == 0, (out + err).strip()
+
+
+def pr_ready(number: int | None = None, cwd: str | None = None) -> tuple[bool, str]:
+    """Mark PR as ready for review (remove draft)."""
+    args = ["pr", "ready"]
+    if number:
+        args.append(str(number))
+    rc, out, err = _gh(*args, cwd=cwd)
+    return rc == 0, (out + err).strip()
+
+
+# ---------------------------------------------------------------------------
+# Issue close / comment / labels
+# ---------------------------------------------------------------------------
+
+def issue_close(number: int, cwd: str | None = None) -> tuple[bool, str]:
+    rc, out, err = _gh("issue", "close", str(number), cwd=cwd)
+    return rc == 0, (out + err).strip()
+
+
+def issue_reopen(number: int, cwd: str | None = None) -> tuple[bool, str]:
+    rc, out, err = _gh("issue", "reopen", str(number), cwd=cwd)
+    return rc == 0, (out + err).strip()
+
+
+def issue_comment(number: int, body: str, cwd: str | None = None) -> tuple[bool, str]:
+    rc, out, err = _gh("issue", "comment", str(number), "--body", body, cwd=cwd)
+    return rc == 0, (out + err).strip()
+
+
+def issue_edit(
+    number: int,
+    title: str | None = None,
+    body: str | None = None,
+    add_labels: list[str] | None = None,
+    remove_labels: list[str] | None = None,
+    cwd: str | None = None,
+) -> tuple[bool, str]:
+    args = ["issue", "edit", str(number)]
+    if title:
+        args += ["--title", title]
+    if body:
+        args += ["--body", body]
+    if add_labels:
+        args += ["--add-label", ",".join(add_labels)]
+    if remove_labels:
+        args += ["--remove-label", ",".join(remove_labels)]
+    rc, out, err = _gh(*args, cwd=cwd)
+    return rc == 0, (out + err).strip()
+
+
+# ---------------------------------------------------------------------------
+# Release management
+# ---------------------------------------------------------------------------
+
+def release_list(cwd: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
+    rc, out, _ = _gh("release", "list", "--limit", str(limit),
+                      "--json", "tagName,name,isDraft,isPrerelease,publishedAt",
+                      cwd=cwd)
+    if rc != 0:
+        return []
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return []
+
+
+def release_create(
+    tag: str,
+    title: str = "",
+    notes: str = "",
+    draft: bool = False,
+    prerelease: bool = False,
+    cwd: str | None = None,
+) -> tuple[bool, str]:
+    args = ["release", "create", tag]
+    if title:
+        args += ["--title", title]
+    if notes:
+        args += ["--notes", notes]
+    if draft:
+        args.append("--draft")
+    if prerelease:
+        args.append("--prerelease")
+    rc, out, err = _gh(*args, cwd=cwd, timeout=60)
+    return rc == 0, (out + err).strip()
+
+
+# ---------------------------------------------------------------------------
+# Workflow / Actions
+# ---------------------------------------------------------------------------
+
+def workflow_list(cwd: str | None = None) -> list[dict[str, Any]]:
+    rc, out, _ = _gh("workflow", "list", "--json", "name,id,state", cwd=cwd)
+    if rc != 0:
+        return []
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return []
+
+
+def run_list(cwd: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
+    rc, out, _ = _gh("run", "list", "--limit", str(limit),
+                      "--json", "databaseId,displayTitle,status,conclusion,headBranch,createdAt",
+                      cwd=cwd)
+    if rc != 0:
+        return []
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return []
+
+
+def run_view(run_id: int, cwd: str | None = None) -> dict[str, Any] | None:
+    rc, out, _ = _gh("run", "view", str(run_id), "--json",
+                      "databaseId,displayTitle,status,conclusion,jobs",
+                      cwd=cwd)
+    if rc != 0:
+        return None
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Gist
+# ---------------------------------------------------------------------------
+
+def gist_create(
+    files: list[str],
+    description: str = "",
+    public: bool = False,
+) -> tuple[bool, str]:
+    args = ["gist", "create"]
+    if description:
+        args += ["--desc", description]
+    if public:
+        args.append("--public")
+    args.extend(files)
+    rc, out, err = _gh(*args, timeout=30)
+    return rc == 0, (out + err).strip()

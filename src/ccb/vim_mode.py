@@ -92,6 +92,91 @@ class VimMode:
             buf.reset()
             self._mode = "NORMAL"
 
+        # dd to delete (clear) current line
+        @bindings.add("d", "d", filter=vi_navigation_mode)
+        def _dd_delete_line(event: KeyPressEvent) -> None:
+            buf = event.app.current_buffer
+            doc = buf.document
+            lines = doc.text.splitlines(True)
+            row = doc.cursor_position_row
+            if 0 <= row < len(lines):
+                lines.pop(row)
+                new_text = "".join(lines)
+                buf.text = new_text
+                buf.cursor_position = min(buf.cursor_position, len(new_text))
+
+        # yy to yank current line (copy to register)
+        @bindings.add("y", "y", filter=vi_navigation_mode)
+        def _yy_yank(event: KeyPressEvent) -> None:
+            doc = event.app.current_buffer.document
+            lines = doc.text.splitlines()
+            row = doc.cursor_position_row
+            if 0 <= row < len(lines):
+                self._register = lines[row]
+
+        # p to paste from register
+        @bindings.add("p", filter=vi_navigation_mode)
+        def _p_paste(event: KeyPressEvent) -> None:
+            if hasattr(self, "_register") and self._register:
+                buf = event.app.current_buffer
+                buf.insert_text("\n" + self._register)
+
+        # o to open new line below and enter insert
+        @bindings.add("o", filter=vi_navigation_mode)
+        def _o_open_below(event: KeyPressEvent) -> None:
+            buf = event.app.current_buffer
+            buf.insert_text("\n")
+            event.app.vi_state.input_mode = event.app.vi_state.InputMode.INSERT
+            self._mode = "INSERT"
+
+        # O to open new line above and enter insert
+        @bindings.add("O", filter=vi_navigation_mode)
+        def _O_open_above(event: KeyPressEvent) -> None:
+            buf = event.app.current_buffer
+            doc = buf.document
+            start = doc.text[:doc.cursor_position].rfind("\n")
+            if start >= 0:
+                buf.cursor_position = start
+            else:
+                buf.cursor_position = 0
+            buf.insert_text("\n")
+            buf.cursor_position -= 1
+            event.app.vi_state.input_mode = event.app.vi_state.InputMode.INSERT
+            self._mode = "INSERT"
+
+        # A to go to end of line and enter insert
+        @bindings.add("A", filter=vi_navigation_mode)
+        def _A_append_eol(event: KeyPressEvent) -> None:
+            buf = event.app.current_buffer
+            doc = buf.document
+            end = doc.text.find("\n", doc.cursor_position)
+            if end >= 0:
+                buf.cursor_position = end
+            else:
+                buf.cursor_position = len(doc.text)
+            event.app.vi_state.input_mode = event.app.vi_state.InputMode.INSERT
+            self._mode = "INSERT"
+
+        # I to go to start of line and enter insert
+        @bindings.add("I", filter=vi_navigation_mode)
+        def _I_insert_bol(event: KeyPressEvent) -> None:
+            buf = event.app.current_buffer
+            doc = buf.document
+            start = doc.text[:doc.cursor_position].rfind("\n")
+            buf.cursor_position = start + 1 if start >= 0 else 0
+            event.app.vi_state.input_mode = event.app.vi_state.InputMode.INSERT
+            self._mode = "INSERT"
+
+        # Mode tracking: detect when prompt_toolkit changes mode
+        @bindings.add("escape", filter=vi_insert_mode)
+        def _esc_to_normal(event: KeyPressEvent) -> None:
+            self._mode = "NORMAL"
+
+        @bindings.add("i", filter=vi_navigation_mode)
+        def _i_to_insert(event: KeyPressEvent) -> None:
+            event.app.vi_state.input_mode = event.app.vi_state.InputMode.INSERT
+            self._mode = "INSERT"
+
         return bindings
 
 

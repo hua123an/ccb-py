@@ -104,7 +104,73 @@ class ProactiveEngine:
                     context="Same action repeated 3+ times",
                 ))
 
+        # Context window nearing limit
+        ctx_usage = ctx.get("context_window_usage", 0.0)
+        if ctx_usage > 0.8:
+            suggestions.append(Suggestion(
+                text=f"Context window {ctx_usage:.0%} full. Use /compact soon.",
+                category="command",
+                command="/compact",
+                confidence=0.9,
+                context=f"Context usage: {ctx_usage:.0%}",
+            ))
+
+        # Large number of files changed
+        files_written = ctx.get("files_written", 0)
+        if files_written >= 5:
+            suggestions.append(Suggestion(
+                text=f"{files_written} files changed. Good time for /diff and /commit.",
+                category="command",
+                command="/commit",
+                confidence=0.7,
+                context=f"{files_written} files written this session",
+            ))
+
+        # Long idle time
+        last_activity = ctx.get("last_activity", 0)
+        if last_activity and (time.time() - last_activity) > 600:
+            suggestions.append(Suggestion(
+                text="Inactive for 10+ minutes. Use /resume or start a new topic.",
+                category="tip",
+                confidence=0.3,
+                context="Long idle period",
+            ))
+
+        # Tools usage hints
+        tools_called = ctx.get("tools_called", 0)
+        if tools_called == 0 and msg_count > 5:
+            suggestions.append(Suggestion(
+                text="No tools used yet. Try asking me to read, write, or run code.",
+                category="tip",
+                confidence=0.5,
+                context="No tool usage in multi-turn session",
+            ))
+
+        # Memory suggestion
+        if msg_count > 10 and not ctx.get("has_memories", False):
+            suggestions.append(Suggestion(
+                text="Consider saving key decisions with /memory for future sessions.",
+                category="command",
+                command="/memory",
+                confidence=0.4,
+                context="Active session with no memories saved",
+            ))
+
+        # Test file detection
+        recent_files = ctx.get("recent_files", [])
+        if any("test" not in f.lower() for f in recent_files) and files_written >= 3:
+            has_tests = any("test" in f.lower() for f in recent_files)
+            if not has_tests:
+                suggestions.append(Suggestion(
+                    text="Consider writing tests for your changes.",
+                    category="code",
+                    confidence=0.5,
+                    context="Multiple files changed without test files",
+                ))
+
         self._last_suggestions = suggestions
+        # Sort by confidence (highest first)
+        self._last_suggestions.sort(key=lambda s: s.confidence, reverse=True)
         return suggestions
 
     @property

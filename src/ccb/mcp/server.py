@@ -201,13 +201,123 @@ def create_default_server() -> MCPServer:
     async def handle_echo(args: dict[str, Any]) -> str:
         return args.get("text", "")
 
+    async def handle_bash(args: dict[str, Any]) -> str:
+        import asyncio
+        cmd = args.get("command", "")
+        timeout = args.get("timeout", 30)
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            output = (stdout or b"").decode("utf-8", errors="replace")
+            err = (stderr or b"").decode("utf-8", errors="replace")
+            return output + err if err else output
+        except asyncio.TimeoutError:
+            return f"Command timed out after {timeout}s"
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def handle_file_read(args: dict[str, Any]) -> str:
+        path = args.get("path", "")
+        try:
+            from pathlib import Path
+            return Path(path).read_text(errors="replace")[:50000]
+        except Exception as e:
+            return f"Error reading {path}: {e}"
+
+    async def handle_file_write(args: dict[str, Any]) -> str:
+        path = args.get("path", "")
+        content = args.get("content", "")
+        try:
+            from pathlib import Path
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_text(content)
+            return f"Written {len(content)} chars to {path}"
+        except Exception as e:
+            return f"Error writing {path}: {e}"
+
+    async def handle_grep(args: dict[str, Any]) -> str:
+        import asyncio
+        pattern = args.get("pattern", "")
+        path = args.get("path", ".")
+        proc = await asyncio.create_subprocess_exec(
+            "grep", "-rn", pattern, path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        return (stdout or b"").decode("utf-8", errors="replace")[:20000]
+
+    async def handle_glob(args: dict[str, Any]) -> str:
+        from pathlib import Path
+        pattern = args.get("pattern", "*")
+        path = args.get("path", ".")
+        matches = sorted(str(p) for p in Path(path).glob(pattern))[:100]
+        return "\n".join(matches)
+
+    # Register tools
     server.register_tool(
         "echo", "Echo the input text",
         {"type": "object", "properties": {"text": {"type": "string"}}},
         handle_echo,
     )
+    server.register_tool(
+        "bash", "Run a shell command",
+        {"type": "object", "properties": {
+            "command": {"type": "string", "description": "The command to run"},
+            "timeout": {"type": "integer", "description": "Timeout in seconds", "default": 30},
+        }, "required": ["command"]},
+        handle_bash,
+    )
+    server.register_tool(
+        "file_read", "Read the contents of a file",
+        {"type": "object", "properties": {
+            "path": {"type": "string", "description": "Path to the file"},
+        }, "required": ["path"]},
+        handle_file_read,
+    )
+    server.register_tool(
+        "file_write", "Write content to a file",
+        {"type": "object", "properties": {
+            "path": {"type": "string", "description": "Path to the file"},
+            "content": {"type": "string", "description": "Content to write"},
+        }, "required": ["path", "content"]},
+        handle_file_write,
+    )
+    server.register_tool(
+        "grep", "Search for a pattern in files",
+        {"type": "object", "properties": {
+            "pattern": {"type": "string", "description": "Search pattern"},
+            "path": {"type": "string", "description": "Directory to search", "default": "."},
+        }, "required": ["pattern"]},
+        handle_grep,
+    )
+    server.register_tool(
+        "glob", "List files matching a glob pattern",
+        {"type": "object", "properties": {
+            "pattern": {"type": "string", "description": "Glob pattern", "default": "*"},
+            "path": {"type": "string", "description": "Base directory", "default": "."},
+        }},
+        handle_glob,
+    )
+
+    # Resources
     server.register_resource("ccb://version", "version", "ccb-py version info")
+    server.register_resource("ccb://tools", "tools", "List of available tools", "application/json")
+    server.register_resource("ccb://status", "status", "Server status", "application/json")
+
+    # Prompts
     server.register_prompt("code-review", "Review code for issues", [
         {"name": "code", "description": "The code to review", "required": True},
     ])
+    server.register_prompt("explain", "Explain how something works", [
+        {"name": "topic", "description": "The topic to explain", "required": True},
+    ])
+    server.register_prompt("test-gen", "Generate tests for code", [
+        {"name": "code", "description": "The code to test", "required": True},
+        {"name": "framework", "description": "Testing framework", "required": False},
+    ])
+
     return server

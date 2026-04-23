@@ -19,6 +19,8 @@ class APIServer:
         self.host = host
         self.port = port
         self._sessions: dict[str, dict[str, Any]] = {}
+        self._ws_clients: dict[str, Any] = {}
+        self._api_key: str = ""
         self._running = False
 
     async def start(self) -> None:
@@ -37,6 +39,7 @@ class APIServer:
         app.router.add_get("/v1/status", self._status)
         app.router.add_get("/v1/tools", self._list_tools)
         app.router.add_post("/v1/tool/{name}", self._call_tool)
+        app.router.add_get("/v1/ws", self._websocket)
 
         runner = web.AppRunner(app)
         await runner.setup()
@@ -131,10 +134,92 @@ class APIServer:
         return web.json_response({"tools": tools})
 
     async def _call_tool(self, request: Any) -> Any:
+        """Execute a tool and return its result."""
         from aiohttp import web
         name = request.match_info["name"]
         try:
             body = await request.json()
         except Exception:
             body = {}
-        return web.json_response({"tool": name, "input": body, "status": "not_implemented"})
+
+        try:
+            from ccb.tools import TOOL_REGISTRY
+            tool = next((t for t in TOOL_REGISTRY if t.name == name), None)
+            if not tool:
+                return web.json_response({"error": f"Unknown tool: {name}"}, status=404)
+            result = await tool.run(body)
+            return web.json_response({
+                "tool": name,
+                "result": result.content if hasattr(result, "content") else str(result),
+                "is_error": getattr(result, "is_error", False),
+            })
+        except Exception as e:
+            return web.json_response({"tool": name, "error": str(e)}, status=500)
+
+    # ── WebSocket endpoint ──
+
+    async def _websocket(self, request: Any) -> Any:
+        """WebSocket endpoint for real-time bidirectional communication."""
+        from aiohttp import web
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        ws_id = str(uuid.uuid4())[:8]
+        self._ws_clients[ws_id] = ws
+
+        try:
+            async for msg in ws:
+                if msg.type == 1:  # TEXT
+                    try:
+                        data = json.loads(msg.data)
+                        method = data.get("method", "")
+                        if method == "chat":
+                            prompt = data.get("message", "")
+                            try:
+                                from ccb.query_engine import run_query
+                                result = await run_query(prompt)
+                                await ws.send_json({"type": "response", "content": result})
+                            except Exception as e:
+                                await ws.send_json({"type": "error", "error": str(e)})
+                        elif method == "ping":
+                            await ws.send_json({"type": "pong", "time": time.time()})
+                        elif method == "subscribe":
+                            await ws.send_json({"type": "subscribed", "channel": data.get("channel", "")})
+                        else:
+                            await ws.send_json({"type": "error", "error": f"Unknown method: {method}"})
+                    except json.JSONDecodeError:
+                        await ws.send_json({"type": "error", "error": "Invalid JSON"})
+                elif msg.type == 258:  # ERROR
+                    break
+        finally:
+            self._ws_clients.pop(ws_id, None)
+        return ws
+
+    async def broadcast(self, event: str, data: Any = None) -> int:
+        """Broadcast an event to all connected WebSocket clients."""
+        msg = json.dumps({"type": "event", "event": event, "data": data})
+        sent = 0
+        for ws in list(self._ws_clients.values()):
+            try:
+                await ws.send_str(msg)
+                sent += 1
+            except Exception:
+                pass
+        return sent
+
+    # ── Auth middleware ──
+
+    async def _auth_middleware(self, app: Any, handler: Any) -> Any:
+        async def middleware_handler(request: Any) -> Any:
+            from aiohttp import web
+            # Skip auth for health endpoint
+            if request.path == "/health":
+                return await handler(request)
+            auth = request.headers.get("Authorization", "")
+            if self._api_key and not auth.endswith(self._api_key):
+                return web.json_response({"error": "Unauthorized"}, status=401)
+            return await handler(request)
+        return middleware_handler
+
+    def set_api_key(self, key: str) -> None:
+        """Set an API key for authenticating requests."""
+        self._api_key = key
