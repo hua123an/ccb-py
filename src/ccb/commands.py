@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from typing import Any, TYPE_CHECKING
 
@@ -660,7 +661,46 @@ async def handle_command(
 
     # ── Login / Logout ──
     if command == "/login":
-        print_info("Use /account to switch accounts. API keys go in env vars or ~/.claude/accounts.json")
+        from ccb.select_ui import select_one
+        methods = [
+            {"label": "API Key", "description": "Enter an API key directly"},
+            {"label": "OAuth", "description": "Authenticate via browser (Anthropic)"},
+            {"label": "Environment", "description": "Use ANTHROPIC_API_KEY env var"},
+        ]
+        choice = await select_one(methods, title="Login Method")
+        if choice == 0:
+            from ccb.select_ui import text_input
+            key = await text_input("API Key:", password=True)
+            if key:
+                from ccb.config import load_accounts, accounts_path
+                import json as _json
+                store = load_accounts()
+                name = await text_input("Account name:", default="default")
+                store[name] = {"_name": name, "api_key": key, "provider": "anthropic"}
+                store["active"] = name
+                accounts_path().write_text(_json.dumps(store, indent=2))
+                print_info(f"Logged in as '{name}'")
+        elif choice == 1:
+            try:
+                from ccb.oauth import OAuthFlow
+                flow = OAuthFlow()
+                token = await flow.authorization_code_flow(
+                    auth_url="https://console.anthropic.com/oauth/authorize",
+                    token_url="https://console.anthropic.com/oauth/token",
+                )
+                if token:
+                    print_info(f"OAuth login successful (expires: {token.expires_at})")
+                else:
+                    print_error("OAuth flow cancelled or failed.")
+            except Exception as e:
+                print_error(f"OAuth error: {e}")
+        elif choice == 2:
+            import os
+            key = os.environ.get("ANTHROPIC_API_KEY", "")
+            if key:
+                print_info(f"Using ANTHROPIC_API_KEY from environment ({key[:8]}...)")
+            else:
+                print_error("ANTHROPIC_API_KEY not set in environment.")
         return True
     if command == "/logout":
         from ccb.config import load_accounts, accounts_path
@@ -694,7 +734,20 @@ async def handle_command(
 
     # ── Agents ──
     if command == "/agents":
-        print_info("Agent configurations: use the 'agent' tool in conversation to spawn sub-agents.")
+        from ccb.coordinator import get_coordinator
+        coord = get_coordinator()
+        s = coord.summary()
+        console.print("[bold]Agent Status[/bold]")
+        console.print(f"  Total:   {s['total']}")
+        console.print(f"  Running: {s['running']}")
+        console.print(f"  Done:    {s['done']}")
+        console.print(f"  Errors:  {s['error']}")
+        if s['total'] == 0:
+            console.print("[dim]  No agents spawned. Use the 'agent' tool in conversation to create sub-agents.[/dim]")
+        else:
+            for agent in coord._agents:
+                icon = {"running": "🔄", "done": "✅", "error": "❌", "idle": "⏸"}.get(agent.status, "?")
+                console.print(f"  {icon} {agent.name} ({agent.role or 'agent'}) — {agent.status}")
         return True
 
     # ── Tasks ──
@@ -1388,8 +1441,32 @@ async def handle_command(
 
     # ── Teleport ──
     if command == "/teleport":
-        print_info("Teleport: transfer this session to another device.")
-        print_info("Use: /share to export, then /resume on the other device.")
+        import base64, json as _json, hashlib
+        if args and args.strip().startswith("import "):
+            code = args.strip()[7:]
+            try:
+                raw = base64.b64decode(code)
+                data = _json.loads(raw)
+                session.load_dict(data)
+                print_info(f"Session imported! ({len(data.get('messages', []))} messages)")
+            except Exception as e:
+                print_error(f"Import failed: {e}")
+        else:
+            data = session.to_dict()
+            raw = _json.dumps(data, separators=(',', ':')).encode()
+            code = base64.b64encode(raw).decode()
+            digest = hashlib.sha256(raw).hexdigest()[:8]
+            console.print(f"[bold]Teleport Code[/bold] (hash: {digest})")
+            console.print(f"  Length: {len(code)} chars")
+            console.print(f"  Messages: {len(data.get('messages', []))}")
+            console.print("")
+            if len(code) < 500:
+                console.print(f"  Code: {code}")
+            else:
+                console.print(f"  Code: {code[:80]}...")
+                console.print(f"  [dim](Full code copied — use /export to save to file)[/dim]")
+            console.print("")
+            console.print("  To import on another device: /teleport import <code>")
         return True
 
     # ── Voice ──
@@ -1484,8 +1561,22 @@ async def handle_command(
 
     # ── Pipes ──
     if command == "/pipes":
-        print_info("Pipe chains allow multi-step prompt processing.")
-        print_info("Use pipe mode: echo 'code' | ccb -p 'review this'")
+        from ccb.query_engine import PipeChain
+        console.print("[bold]Pipe Chains[/bold]")
+        console.print("  Usage: echo 'code' | ccb -p 'review this'")
+        console.print("  Chain: ccb -p 'step1' | ccb -p 'step2'")
+        console.print("")
+        import sys
+        if not sys.stdin.isatty():
+            console.print("  [green]✓ Pipe input detected[/green]")
+        else:
+            console.print("  [dim]No pipe input active[/dim]")
+        console.print("")
+        console.print("  PipeChain API:")
+        console.print("    chain = PipeChain()")
+        console.print("    chain.add('Review this code')")
+        console.print("    chain.add('Suggest improvements')")
+        console.print("    result = await chain.run(provider, input_text)")
         return True
 
     # ── Agents platform ──
@@ -1544,12 +1635,44 @@ async def handle_command(
 
     # ── Break cache ──
     if command == "/break-cache":
-        print_info("Cache cleared.")
+        cleared = 0
+        # Clear prompt cache (if using cached system prompts)
+        state.pop("_cached_system_prompt", None)
+        state.pop("_cached_tools", None)
+        cleared += 1
+        # Clear any in-memory caches
+        import importlib
+        for mod_name in ["ccb.prompts", "ccb.skills", "ccb.config"]:
+            mod = sys.modules.get(mod_name)
+            if mod and hasattr(mod, "_cache"):
+                mod._cache.clear()
+                cleared += 1
+        # Clear file hash cache used by tools
+        state.pop("_file_hashes", None)
+        # Invalidate MCP tool cache
+        if mcp_manager and hasattr(mcp_manager, "_tool_cache"):
+            mcp_manager._tool_cache.clear()
+            cleared += 1
+        print_info(f"Cache cleared ({cleared} caches invalidated). Next request will be fresh.")
         return True
 
     # ── Claim main ──
     if command == "/claim-main":
-        print_info("This is now the main ccb-py process.")
+        import os
+        from pathlib import Path
+        pid_file = Path.home() / ".claude" / "ccb-main.pid"
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        # Check if another main process exists
+        if pid_file.exists():
+            try:
+                old_pid = int(pid_file.read_text().strip())
+                os.kill(old_pid, 0)  # Check if alive
+                print_info(f"⚠ Another main process (PID {old_pid}) is running.")
+            except (ProcessLookupError, ValueError):
+                pass  # Old process is dead
+        pid_file.write_text(str(os.getpid()))
+        state["is_main"] = True
+        print_info(f"Claimed main process (PID {os.getpid()})")
         return True
 
     # ── Ant trace ──
