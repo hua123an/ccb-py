@@ -34,6 +34,7 @@ class IDEBridge:
         self.port = port
         self._handlers: dict[str, MessageHandler] = {}
         self._connections: list[Any] = []
+        self._pending_requests: dict[str, asyncio.Future] = {}
         self._running = False
         self._server: Any = None
         self._register_default_handlers()
@@ -110,6 +111,19 @@ class IDEBridge:
                 async for raw in websocket:
                     try:
                         data = json.loads(raw)
+
+                        # Handle responses to our requests
+                        if data.get("type") == "response":
+                            req_id = data.get("id")
+                            if req_id and req_id in self._pending_requests:
+                                fut = self._pending_requests.pop(req_id)
+                                if not fut.done():
+                                    if "error" in data:
+                                        fut.set_exception(Exception(data["error"]))
+                                    else:
+                                        fut.set_result(data.get("result"))
+                            continue
+
                         msg = BridgeMessage(
                             type=data.get("type", "request"),
                             method=data.get("method", ""),
@@ -152,6 +166,109 @@ class IDEBridge:
     @property
     def connection_count(self) -> int:
         return len(self._connections)
+
+
+    # ── Request to IDE ──
+
+    async def request(self, method: str, params: dict[str, Any] | None = None, timeout: float = 10.0) -> Any:
+        """Send a request to the IDE and wait for a response."""
+        if not self._connections:
+            return None
+        import uuid
+        req_id = str(uuid.uuid4())[:8]
+        msg = json.dumps({
+            "type": "request",
+            "id": req_id,
+            "method": method,
+            "params": params or {},
+        })
+
+        # Set up response future
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future[Any] = loop.create_future()
+        self._pending_requests[req_id] = future
+
+        ws = self._connections[0]  # Send to first connected client
+        try:
+            await ws.send(msg)
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            self._pending_requests.pop(req_id, None)
+            return None
+
+    async def get_editor_state(self) -> dict[str, Any]:
+        """Request current editor state from IDE."""
+        result = await self.request("editor/getState")
+        return result if isinstance(result, dict) else {}
+
+    async def get_workspace_folders(self) -> list[str]:
+        result = await self.request("workspace/getFolders")
+        return result if isinstance(result, list) else []
+
+    async def get_selection(self) -> dict[str, Any]:
+        """Get current text selection in the IDE."""
+        result = await self.request("editor/getSelection")
+        return result if isinstance(result, dict) else {}
+
+    async def insert_text(self, text: str, position: dict[str, int] | None = None) -> bool:
+        result = await self.request("editor/insertText", {"text": text, "position": position})
+        return bool(result)
+
+    async def show_message(self, message: str, severity: str = "info") -> None:
+        await self.notify("window/showMessage", {"message": message, "severity": severity})
+
+    async def get_terminal_output(self) -> str:
+        result = await self.request("terminal/getOutput")
+        return result if isinstance(result, str) else ""
+
+    # ── VS Code specific protocol support ──
+
+    async def vscode_execute_command(self, command: str, args: list[Any] | None = None) -> Any:
+        """Execute a VS Code command."""
+        return await self.request("vscode/executeCommand", {"command": command, "args": args or []})
+
+    async def vscode_open_settings(self, query: str = "") -> None:
+        await self.request("vscode/openSettings", {"query": query})
+
+    async def vscode_show_quick_pick(self, items: list[str], placeholder: str = "") -> str | None:
+        result = await self.request("vscode/showQuickPick", {
+            "items": items, "placeholder": placeholder
+        })
+        return result if isinstance(result, str) else None
+
+    async def vscode_show_input_box(self, prompt: str = "", value: str = "") -> str | None:
+        result = await self.request("vscode/showInputBox", {"prompt": prompt, "value": value})
+        return result if isinstance(result, str) else None
+
+    # ── JetBrains protocol support ──
+
+    async def jetbrains_run_action(self, action_id: str) -> Any:
+        return await self.request("jetbrains/runAction", {"actionId": action_id})
+
+    # ── File watch ──
+
+    async def watch_file(self, pattern: str) -> bool:
+        result = await self.request("workspace/watchFile", {"pattern": pattern})
+        return bool(result)
+
+    async def unwatch_file(self, pattern: str) -> bool:
+        result = await self.request("workspace/unwatchFile", {"pattern": pattern})
+        return bool(result)
+
+    # ── Diagnostics push ──
+
+    async def push_diagnostics(self, path: str, diagnostics: list[dict[str, Any]]) -> None:
+        await self.notify("textDocument/publishDiagnostics", {
+            "uri": f"file://{path}",
+            "diagnostics": diagnostics,
+        })
+
+    # ── Inline completions ──
+
+    async def provide_inline_completion(self, path: str, line: int, column: int, text: str) -> None:
+        await self.notify("editor/inlineCompletion", {
+            "path": path, "line": line, "column": column, "text": text,
+        })
 
 
 # Module singleton

@@ -362,6 +362,127 @@ class MCPManager:
             return parts[1], parts[2]
         return None
 
+    # ── Resource subscription ──
+
+    async def subscribe_resource(self, server_name: str, uri: str) -> bool:
+        """Subscribe to resource changes on an MCP server."""
+        server = self._servers.get(server_name)
+        if not server or not server.connected:
+            return False
+        try:
+            await self._send_request(server, "resources/subscribe", {"uri": uri})
+            return True
+        except Exception:
+            return False
+
+    async def unsubscribe_resource(self, server_name: str, uri: str) -> bool:
+        server = self._servers.get(server_name)
+        if not server or not server.connected:
+            return False
+        try:
+            await self._send_request(server, "resources/unsubscribe", {"uri": uri})
+            return True
+        except Exception:
+            return False
+
+    # ── Prompts ──
+
+    async def list_prompts(self, server_name: str) -> list[dict[str, Any]]:
+        server = self._servers.get(server_name)
+        if not server or not server.connected:
+            return []
+        try:
+            result = await self._send_request(server, "prompts/list", {})
+            return result.get("prompts", [])
+        except Exception:
+            return []
+
+    async def get_prompt(self, server_name: str, name: str, arguments: dict[str, Any] | None = None) -> str:
+        server = self._servers.get(server_name)
+        if not server or not server.connected:
+            return f"Server '{server_name}' not connected"
+        try:
+            result = await self._send_request(server, "prompts/get", {
+                "name": name, "arguments": arguments or {}
+            })
+            messages = result.get("messages", [])
+            texts = []
+            for m in messages:
+                c = m.get("content", {})
+                if isinstance(c, dict) and c.get("type") == "text":
+                    texts.append(c.get("text", ""))
+                elif isinstance(c, str):
+                    texts.append(c)
+            return "\n".join(texts) if texts else json.dumps(result)
+        except Exception as e:
+            return str(e)
+
+    # ── Config validation ──
+
+    def validate_configs(self) -> dict[str, Any]:
+        """Validate all MCP server configs before connection."""
+        from ccb.mcp.config_validator import validate_all_configs
+        configs = self.discover_servers()
+        result = validate_all_configs(configs)
+        return {
+            "valid": result.valid,
+            "errors": len(result.errors),
+            "warnings": len(result.warnings),
+            "details": result.format(),
+        }
+
+    # ── Health ──
+
+    async def ping(self, server_name: str) -> float | None:
+        """Ping a server and return latency in ms, or None on failure."""
+        server = self._servers.get(server_name)
+        if not server or not server.connected:
+            return None
+        import time
+        start = time.time()
+        try:
+            await asyncio.wait_for(
+                self._send_request(server, "ping", {}),
+                timeout=10,
+            )
+            return (time.time() - start) * 1000
+        except Exception:
+            return None
+
+    async def health_check_all(self) -> dict[str, Any]:
+        """Ping all connected servers and report health."""
+        results = {}
+        for name, server in self._servers.items():
+            latency = await self.ping(name) if server.connected else None
+            results[name] = {
+                "connected": server.connected,
+                "type": server.type,
+                "tools": len(server.tools),
+                "latency_ms": round(latency, 1) if latency is not None else None,
+                "healthy": latency is not None,
+            }
+        return results
+
+    # ── Disconnect ──
+
+    async def disconnect(self, server_name: str) -> bool:
+        """Disconnect a single MCP server."""
+        server = self._servers.get(server_name)
+        if not server:
+            return False
+        if server._read_task:
+            server._read_task.cancel()
+        if server._proc:
+            try:
+                server._proc.terminate()
+                await asyncio.wait_for(server._proc.wait(), timeout=5)
+            except (asyncio.TimeoutError, ProcessLookupError):
+                if server._proc:
+                    server._proc.kill()
+        server.connected = False
+        del self._servers[server_name]
+        return True
+
     async def disconnect_all(self) -> None:
         """Disconnect all MCP servers."""
         for server in self._servers.values():
@@ -376,3 +497,23 @@ class MCPManager:
                         server._proc.kill()
             server.connected = False
         self._servers.clear()
+
+    # ── Reconnect ──
+
+    async def reconnect(self, server_name: str) -> bool:
+        """Reconnect a specific MCP server."""
+        configs = self.discover_servers()
+        cfg = configs.get(server_name)
+        if not cfg:
+            return False
+        await self.disconnect(server_name)
+        try:
+            await self.connect(server_name, cfg)
+            return True
+        except Exception:
+            return False
+
+    async def reconnect_all(self) -> list[str]:
+        """Reconnect all MCP servers."""
+        await self.disconnect_all()
+        return await self.connect_all()

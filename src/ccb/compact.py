@@ -317,3 +317,221 @@ class CompactEngine:
     @property
     def history(self) -> list[str]:
         return self._history
+
+
+# ---------------------------------------------------------------------------
+# File reference compression
+# ---------------------------------------------------------------------------
+
+class FileReferenceCompressor:
+    """Compress file content references in conversation messages.
+
+    When conversations contain large file reads, this replaces the full
+    content with a compact reference + key lines summary.
+    """
+
+    def __init__(self, max_file_lines: int = 30, max_file_chars: int = 2000):
+        self._max_lines = max_file_lines
+        self._max_chars = max_file_chars
+
+    def compress_messages(self, messages: list[Any]) -> list[Any]:
+        """Compress file content in messages to save context."""
+        import copy
+        compressed = []
+        for msg in messages:
+            new_msg = copy.copy(msg)
+            if new_msg.content:
+                new_msg.content = self._compress_content(new_msg.content)
+            compressed.append(new_msg)
+        return compressed
+
+    def _compress_content(self, content: str) -> str:
+        """Replace large file blocks with summaries."""
+        import re as _re
+
+        # Pattern: ```filename\n...content...\n``` or file content blocks
+        def _replace_code_block(match: _re.Match) -> str:
+            lang = match.group(1) or ""
+            code = match.group(2)
+            if len(code) <= self._max_chars:
+                return match.group(0)  # Keep small blocks
+            lines = code.splitlines()
+            if len(lines) <= self._max_lines:
+                return match.group(0)
+            # Keep first and last N lines, summarize middle
+            keep = self._max_lines // 2
+            head = "\n".join(lines[:keep])
+            tail = "\n".join(lines[-keep:])
+            omitted = len(lines) - 2 * keep
+            return f"```{lang}\n{head}\n\n... ({omitted} lines omitted) ...\n\n{tail}\n```"
+
+        result = _re.sub(
+            r"```(\w*)\n(.*?)```",
+            _replace_code_block,
+            content,
+            flags=_re.DOTALL,
+        )
+
+        # Also compress tool result blocks that are very long
+        def _compress_tool_result(match: _re.Match) -> str:
+            block = match.group(0)
+            if len(block) <= self._max_chars * 2:
+                return block
+            return block[:self._max_chars] + f"\n... (truncated {len(block) - self._max_chars} chars) ..."
+
+        result = _re.sub(
+            r"<tool_result>.*?</tool_result>",
+            _compress_tool_result,
+            result,
+            flags=_re.DOTALL,
+        )
+
+        return result
+
+
+# ---------------------------------------------------------------------------
+# Compaction quality assessment
+# ---------------------------------------------------------------------------
+
+class CompactQualityAssessor:
+    """Assess the quality of a compaction summary."""
+
+    REQUIRED_SECTIONS = [
+        "Primary Request",
+        "Technical Concepts",
+        "Files and Code",
+        "Errors",
+        "Problem Solving",
+        "User messages",
+        "Pending Tasks",
+        "Current Work",
+    ]
+
+    def assess(self, summary: str) -> dict[str, Any]:
+        """Assess compaction quality. Returns score 0.0-1.0 and details."""
+        import re as _re
+
+        checks: dict[str, bool] = {}
+        score = 0.0
+        max_score = 0.0
+
+        # Check section coverage
+        for section in self.REQUIRED_SECTIONS:
+            present = bool(_re.search(section, summary, _re.IGNORECASE))
+            checks[f"section:{section}"] = present
+            max_score += 1.0
+            if present:
+                score += 1.0
+
+        # Check for code snippets preserved
+        has_code = "```" in summary
+        checks["has_code_snippets"] = has_code
+        max_score += 1.0
+        if has_code:
+            score += 1.0
+
+        # Check for file references
+        has_files = bool(_re.search(r"[\w/]+\.\w+", summary))
+        checks["has_file_references"] = has_files
+        max_score += 1.0
+        if has_files:
+            score += 1.0
+
+        # Length check (not too short, not too long)
+        word_count = len(summary.split())
+        good_length = 200 <= word_count <= 5000
+        checks["good_length"] = good_length
+        checks["word_count"] = word_count
+        max_score += 1.0
+        if good_length:
+            score += 1.0
+
+        # Check analysis was stripped
+        no_analysis = "<analysis>" not in summary
+        checks["analysis_stripped"] = no_analysis
+        max_score += 1.0
+        if no_analysis:
+            score += 1.0
+
+        final_score = score / max_score if max_score > 0 else 0.0
+
+        return {
+            "score": round(final_score, 2),
+            "checks": checks,
+            "grade": (
+                "A" if final_score >= 0.9 else
+                "B" if final_score >= 0.7 else
+                "C" if final_score >= 0.5 else
+                "D"
+            ),
+            "word_count": word_count,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Adaptive context window management
+# ---------------------------------------------------------------------------
+
+class AdaptiveContextManager:
+    """Manages context window adaptively based on model limits.
+
+    Decides when to trigger compaction and how aggressively to compress
+    based on token usage relative to the model's context window.
+    """
+
+    def __init__(self, max_context_tokens: int = 200000):
+        self.max_context = max_context_tokens
+        self._compact_threshold = 0.75  # Start compact at 75%
+        self._emergency_threshold = 0.90  # Aggressive compact at 90%
+        self._file_compressor = FileReferenceCompressor()
+
+    def set_model_limit(self, tokens: int) -> None:
+        self.max_context = tokens
+
+    def should_compact(self, current_tokens: int) -> str:
+        """Return compaction action: 'none', 'soft', 'aggressive', or 'emergency'."""
+        ratio = current_tokens / self.max_context if self.max_context > 0 else 0
+        if ratio >= self._emergency_threshold:
+            return "emergency"
+        elif ratio >= self._compact_threshold:
+            return "aggressive"
+        elif ratio >= self._compact_threshold * 0.8:
+            return "soft"
+        return "none"
+
+    def compact_strategy(self, current_tokens: int, message_count: int) -> dict[str, Any]:
+        """Determine the best compaction strategy."""
+        action = self.should_compact(current_tokens)
+        ratio = current_tokens / self.max_context if self.max_context > 0 else 0
+
+        if action == "none":
+            return {"action": "none", "ratio": round(ratio, 2)}
+
+        strategy: dict[str, Any] = {
+            "action": action,
+            "ratio": round(ratio, 2),
+            "current_tokens": current_tokens,
+            "max_tokens": self.max_context,
+        }
+
+        if action == "emergency":
+            strategy["compress_files"] = True
+            strategy["slim_tools"] = True
+            strategy["max_rounds"] = 3
+            strategy["target_ratio"] = 0.2
+            strategy["drop_old_tool_results"] = True
+        elif action == "aggressive":
+            strategy["compress_files"] = True
+            strategy["slim_tools"] = True
+            strategy["max_rounds"] = 2
+            strategy["target_ratio"] = 0.3
+        else:  # soft
+            strategy["compress_files"] = False
+            strategy["slim_tools"] = False
+            strategy["max_rounds"] = 1
+            strategy["target_ratio"] = 0.5
+
+        return strategy
+
+    def apply_file_compression(self, messages: list[Any]) -> list[Any]:
+        return self._file_compressor.compress_messages(messages)

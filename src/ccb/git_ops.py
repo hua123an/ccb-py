@@ -321,3 +321,153 @@ def pull(remote: str = "origin", branch: str | None = None, cwd: str | None = No
         args.append(branch)
     rc, out, err = _run(*args, cwd=cwd, timeout=60)
     return rc == 0, (out + err).strip()
+
+
+def fetch(remote: str = "origin", cwd: str | None = None) -> tuple[bool, str]:
+    rc, out, err = _run("fetch", remote, cwd=cwd, timeout=60)
+    return rc == 0, (out + err).strip()
+
+
+# ---------------------------------------------------------------------------
+# Merge & Rebase
+# ---------------------------------------------------------------------------
+
+def merge(branch: str, no_ff: bool = False, cwd: str | None = None) -> tuple[bool, str]:
+    args = ["merge"]
+    if no_ff:
+        args.append("--no-ff")
+    args.append(branch)
+    rc, out, err = _run(*args, cwd=cwd)
+    return rc == 0, (out + err).strip()
+
+
+def rebase(onto: str, interactive: bool = False, cwd: str | None = None) -> tuple[bool, str]:
+    args = ["rebase"]
+    if interactive:
+        args.append("-i")
+    args.append(onto)
+    rc, out, err = _run(*args, cwd=cwd)
+    return rc == 0, (out + err).strip()
+
+
+def cherry_pick(commit_hash: str, cwd: str | None = None) -> tuple[bool, str]:
+    rc, out, err = _run("cherry-pick", commit_hash, cwd=cwd)
+    return rc == 0, (out + err).strip()
+
+
+def abort_merge(cwd: str | None = None) -> tuple[bool, str]:
+    rc, out, err = _run("merge", "--abort", cwd=cwd)
+    return rc == 0, (out + err).strip()
+
+
+def abort_rebase(cwd: str | None = None) -> tuple[bool, str]:
+    rc, out, err = _run("rebase", "--abort", cwd=cwd)
+    return rc == 0, (out + err).strip()
+
+
+# ---------------------------------------------------------------------------
+# Conflict detection
+# ---------------------------------------------------------------------------
+
+def has_conflicts(cwd: str | None = None) -> bool:
+    """Check if there are unresolved merge conflicts."""
+    rc, out, _ = _run("diff", "--name-only", "--diff-filter=U", cwd=cwd)
+    return rc == 0 and bool(out.strip())
+
+
+def conflict_files(cwd: str | None = None) -> list[str]:
+    rc, out, _ = _run("diff", "--name-only", "--diff-filter=U", cwd=cwd)
+    return out.strip().splitlines() if rc == 0 else []
+
+
+# ---------------------------------------------------------------------------
+# Worktree info
+# ---------------------------------------------------------------------------
+
+def is_clean(cwd: str | None = None) -> bool:
+    """Check if the working tree is clean (no uncommitted changes)."""
+    rc, out, _ = _run("status", "--porcelain", cwd=cwd)
+    return rc == 0 and not out.strip()
+
+
+def changed_files(cwd: str | None = None) -> list[str]:
+    """All files with any kind of change (staged + unstaged + untracked)."""
+    rc, out, _ = _run("status", "--porcelain", cwd=cwd)
+    if rc != 0:
+        return []
+    files = []
+    for line in out.strip().splitlines():
+        if len(line) > 3:
+            files.append(line[3:].strip())
+    return files
+
+
+def untracked_files(cwd: str | None = None) -> list[str]:
+    rc, out, _ = _run("ls-files", "--others", "--exclude-standard", cwd=cwd)
+    return out.strip().splitlines() if rc == 0 else []
+
+
+# ---------------------------------------------------------------------------
+# Commit helpers
+# ---------------------------------------------------------------------------
+
+def amend_commit(message: str | None = None, cwd: str | None = None) -> tuple[bool, str]:
+    args = ["commit", "--amend"]
+    if message:
+        args += ["-m", message]
+    else:
+        args.append("--no-edit")
+    rc, out, err = _run(*args, cwd=cwd)
+    return rc == 0, (out + err).strip()
+
+
+def commit_with_message(message: str, all_files: bool = False, cwd: str | None = None) -> tuple[bool, str]:
+    """Stage all (optionally) and commit."""
+    if all_files:
+        stage(cwd=cwd)
+    return commit(message, cwd=cwd)
+
+
+def show_commit(ref: str = "HEAD", cwd: str | None = None) -> str:
+    rc, out, _ = _run("show", "--stat", ref, cwd=cwd)
+    return out if rc == 0 else ""
+
+
+# ---------------------------------------------------------------------------
+# Repo info
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RepoInfo:
+    root: str
+    branch: str
+    clean: bool
+    remote_url: str
+    commit_count: int
+    last_commit: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "root": self.root,
+            "branch": self.branch,
+            "clean": self.clean,
+            "remote_url": self.remote_url,
+            "commit_count": self.commit_count,
+            "last_commit": self.last_commit,
+        }
+
+
+def repo_info(cwd: str | None = None) -> RepoInfo | None:
+    root = git_root(cwd)
+    if not root:
+        return None
+    br = current_branch(cwd)
+    clean = is_clean(cwd)
+    rems = remotes(cwd)
+    remote_url = rems[0]["url"] if rems else ""
+    rc, out, _ = _run("rev-list", "--count", "HEAD", cwd=cwd)
+    count = int(out.strip()) if rc == 0 else 0
+    entries = log(count=1, cwd=cwd)
+    last = entries[0].subject if entries else ""
+    return RepoInfo(root=root, branch=br, clean=clean, remote_url=remote_url,
+                    commit_count=count, last_commit=last)

@@ -194,6 +194,137 @@ def parse_extracted_memories(llm_output: str) -> list[dict[str, Any]]:
     return []
 
 
+# ---------------------------------------------------------------------------
+# Auto-extraction engine
+# ---------------------------------------------------------------------------
+
+class MemoryExtractor:
+    """Automatically extracts and stores memories from conversations."""
+
+    def __init__(self, store: MemoryStore | None = None, provider: Any = None):
+        self._store = store or get_store()
+        self._provider = provider
+        self._enabled = True
+
+    async def extract_from_session(self, messages: list[Any], session_id: str = "") -> list[Memory]:
+        """Extract memories from a list of conversation messages."""
+        if not self._enabled or not self._provider:
+            return []
+
+        from ccb.api.base import Message, Role
+
+        # Build conversation text
+        conv_text = "\n".join(
+            f"[{m.role.value}]: {(m.content or '')[:1000]}"
+            for m in messages
+            if m.content
+        )
+
+        if len(conv_text) < 100:
+            return []  # Too short
+
+        prompt = generate_extract_memories_prompt(conv_text)
+        extract_messages = [Message(role=Role.USER, content=prompt)]
+
+        result = ""
+        try:
+            async for event in self._provider.stream(
+                messages=extract_messages,
+                tools=[],
+                system="You extract important facts from conversations. Reply with JSON only.",
+                max_tokens=2048,
+            ):
+                if event.type == "text":
+                    result += event.text
+        except Exception:
+            return []
+
+        parsed = parse_extracted_memories(result)
+        stored = []
+        for item in parsed:
+            content = item.get("content", "")
+            tags = item.get("tags", [])
+            if content and len(content) > 10:
+                # Dedup: check if similar memory exists
+                existing = self._store.search(content[:50], limit=3)
+                if not any(self._similarity(content, e.content) > 0.8 for e in existing):
+                    mem = self._store.add(content, tags=tags, source=session_id)
+                    stored.append(mem)
+        return stored
+
+    @staticmethod
+    def _similarity(a: str, b: str) -> float:
+        """Simple word-overlap similarity (Jaccard)."""
+        words_a = set(a.lower().split())
+        words_b = set(b.lower().split())
+        if not words_a or not words_b:
+            return 0.0
+        intersection = words_a & words_b
+        union = words_a | words_b
+        return len(intersection) / len(union)
+
+    def set_provider(self, provider: Any) -> None:
+        self._provider = provider
+
+    def toggle(self) -> bool:
+        self._enabled = not self._enabled
+        return self._enabled
+
+
+# ---------------------------------------------------------------------------
+# Memory decay — reduce relevance of old, unused memories
+# ---------------------------------------------------------------------------
+
+def apply_decay(store: MemoryStore | None = None, decay_rate: float = 0.95, min_score: float = 0.01) -> int:
+    """Apply time-based decay to all memories. Returns count of pruned memories."""
+    s = store or get_store()
+    pruned = 0
+    now = time.time()
+    for mid in list(s._index):
+        # Read raw file without incrementing access count
+        f = s._memory_file(mid)
+        if not f.exists():
+            continue
+        try:
+            data = json.loads(f.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        access_count = data.get("access_count", 0)
+        created = data.get("created_at", now)
+        updated = data.get("updated_at", created)
+        last_active = max(updated, created)
+        days_old = (now - last_active) / 86400
+        decay = decay_rate ** days_old
+        effective_score = decay * (1 + access_count * 0.1)
+        if effective_score < min_score and access_count <= 1:
+            s.delete(mid)
+            pruned += 1
+    return pruned
+
+
+# ---------------------------------------------------------------------------
+# Context injection — build memory context for system prompt
+# ---------------------------------------------------------------------------
+
+def build_memory_context(query: str = "", limit: int = 10, store: MemoryStore | None = None) -> str:
+    """Build a memory context string for injection into the system prompt."""
+    s = store or get_store()
+    if query:
+        memories = s.search(query, limit=limit)
+    else:
+        memories = s.list_all()[:limit]
+
+    if not memories:
+        return ""
+
+    lines = ["<memories>"]
+    for m in memories:
+        tags_str = f" [tags: {', '.join(m.tags)}]" if m.tags else ""
+        lines.append(f"- {m.content}{tags_str}")
+    lines.append("</memories>")
+    return "\n".join(lines)
+
+
 # Module-level singleton
 _store: MemoryStore | None = None
 
@@ -203,3 +334,13 @@ def get_store() -> MemoryStore:
     if _store is None:
         _store = MemoryStore()
     return _store
+
+
+_extractor: MemoryExtractor | None = None
+
+
+def get_extractor() -> MemoryExtractor:
+    global _extractor
+    if _extractor is None:
+        _extractor = MemoryExtractor()
+    return _extractor

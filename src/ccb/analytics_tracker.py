@@ -167,6 +167,123 @@ class AnalyticsTracker:
             return self._langfuse.trace(name=name, **kwargs)
         return None
 
+    def langfuse_generation(
+        self,
+        trace_id: str,
+        name: str,
+        model: str,
+        input_text: str,
+        output_text: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        duration_ms: float = 0,
+    ) -> Any:
+        """Log an LLM generation to Langfuse."""
+        if not self._langfuse:
+            return None
+        try:
+            return self._langfuse.generation(
+                trace_id=trace_id,
+                name=name,
+                model=model,
+                input=input_text[:5000],
+                output=output_text[:5000],
+                usage={
+                    "input": input_tokens,
+                    "output": output_tokens,
+                    "total": input_tokens + output_tokens,
+                },
+                metadata={"duration_ms": duration_ms},
+            )
+        except Exception:
+            return None
+
+    def langfuse_span(self, trace_id: str, name: str, **kwargs: Any) -> Any:
+        if not self._langfuse:
+            return None
+        try:
+            return self._langfuse.span(trace_id=trace_id, name=name, **kwargs)
+        except Exception:
+            return None
+
+    def langfuse_event(self, trace_id: str, name: str, **kwargs: Any) -> Any:
+        if not self._langfuse:
+            return None
+        try:
+            return self._langfuse.event(trace_id=trace_id, name=name, **kwargs)
+        except Exception:
+            return None
+
+    def langfuse_flush(self) -> None:
+        if self._langfuse:
+            try:
+                self._langfuse.flush()
+            except Exception:
+                pass
+
+    # ── Performance metrics ──
+
+    def track_latency(self, name: str, start_time: float) -> float:
+        """Track and record latency for an operation."""
+        latency = (time.time() - start_time) * 1000  # ms
+        self.track_event("latency", name, latency_ms=latency)
+        return latency
+
+    def get_latency_stats(self) -> dict[str, Any]:
+        """Get average latency by event name."""
+        latencies: dict[str, list[float]] = {}
+        for e in self._events:
+            if e.event_type == "latency":
+                if e.name not in latencies:
+                    latencies[e.name] = []
+                latencies[e.name].append(e.metadata.get("latency_ms", 0))
+
+        stats = {}
+        for name, values in latencies.items():
+            if values:
+                stats[name] = {
+                    "avg_ms": round(sum(values) / len(values), 1),
+                    "min_ms": round(min(values), 1),
+                    "max_ms": round(max(values), 1),
+                    "count": len(values),
+                }
+        return stats
+
+    # ── Export ──
+
+    def export_csv(self, output_path: str | None = None) -> str:
+        """Export session stats as CSV."""
+        import csv
+        import io
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["session_id", "start", "messages", "turns", "input_tokens",
+                         "output_tokens", "cost_usd", "errors"])
+
+        for f in sorted(self._dir.glob("*.json")):
+            if f.name.startswith("events_"):
+                continue
+            try:
+                d = json.loads(f.read_text())
+                writer.writerow([
+                    d.get("session_id", ""),
+                    d.get("start_time", ""),
+                    d.get("messages", 0),
+                    d.get("turns", 0),
+                    d.get("input_tokens", 0),
+                    d.get("output_tokens", 0),
+                    d.get("cost_usd", 0),
+                    d.get("errors", 0),
+                ])
+            except (json.JSONDecodeError, OSError):
+                continue
+
+        content = buf.getvalue()
+        if output_path:
+            Path(output_path).write_text(content)
+        return content
+
 
 # Module singleton
 _tracker: AnalyticsTracker | None = None
