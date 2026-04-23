@@ -207,7 +207,24 @@ async def handle_command(
 
     # ── Theme ──
     if command == "/theme":
-        print_info("Themes: default (currently active). More coming soon.")
+        available_themes = ["default", "monokai", "solarized-dark", "solarized-light",
+                            "dracula", "nord", "gruvbox", "one-dark", "catppuccin"]
+        current = state.get("theme", "default")
+        if args:
+            choice = args.strip().lower()
+            if choice in available_themes:
+                state["theme"] = choice
+                print_info(f"Theme set to: {choice}")
+            elif choice == "list":
+                console.print("[bold]Available themes:[/bold]")
+                for t in available_themes:
+                    marker = " ← active" if t == current else ""
+                    console.print(f"  • {t}{marker}")
+            else:
+                print_error(f"Unknown theme: {choice}. Use /theme list to see options.")
+        else:
+            console.print(f"[bold]Current theme:[/bold] {current}")
+            console.print(f"[dim]Use /theme list to see all, /theme <name> to switch.[/dim]")
         return True
 
     # ── MCP ──
@@ -820,10 +837,8 @@ async def handle_command(
             console.print("  [dim](Vim mode active — i/a/o to insert, Esc to normal)[/dim]")
         return True
 
-    # ── IDE ──
-    if command == "/ide":
-        print_info("IDE integration not available in CLI mode. Use the VS Code extension.")
-        return True
+    # ── IDE ── (handled later with bridge integration)
+    # /ide is processed below with the IDEBridge
 
     # ── Desktop / Mobile / Voice ──
     if command == "/desktop":
@@ -833,7 +848,37 @@ async def handle_command(
         print_info("Download Claude mobile: https://claude.ai/mobile")
         return True
     if command == "/voice":
-        print_info("Voice mode not available in CLI. Use Claude mobile app.")
+        try:
+            from ccb.voice_input import VoiceInput
+            voice = VoiceInput()
+            if args == "info":
+                info = voice.info()
+                for k, v in info.items():
+                    console.print(f"  {k}: {v}")
+            elif args == "listen":
+                print_info("Listening... (speak now, press Ctrl+C to stop)")
+                text = await asyncio.get_event_loop().run_in_executor(None, voice.record_and_transcribe)
+                if text:
+                    console.print(f"[bold]Transcribed:[/bold] {text}")
+                    session.add_user_message(text)
+                    from ccb.loop import run_turn
+                    from ccb.prompts import get_system_prompt
+                    await run_turn(provider, session, registry, get_system_prompt(cwd), mcp_manager=mcp_manager)
+                    session.save()
+                else:
+                    print_info("No speech detected.")
+            elif args and args.startswith("model "):
+                model_name = args[6:].strip()
+                voice.set_whisper_config(model=model_name)
+                print_info(f"Whisper model set to: {model_name}")
+            else:
+                info = voice.info()
+                console.print(f"[bold]Voice input[/bold]: backend={info.get('backend', 'none')}")
+                console.print("[dim]  /voice listen — record and transcribe")
+                console.print("  /voice info — show details")
+                console.print("  /voice model <name> — set whisper model[/dim]")
+        except Exception as e:
+            print_error(f"Voice input error: {e}")
         return True
 
     # ── Share ──
@@ -882,7 +927,19 @@ async def handle_command(
 
     # ── Thinkback ──
     if command in ("/thinkback", "/thinkback-play"):
-        print_info("🎬 Your Claude Code Year in Review — coming soon!")
+        console.print("[bold]🎬 Session Replay[/bold]")
+        if session.messages:
+            total = len(session.messages)
+            console.print(f"Replaying {total} messages from this session:\n")
+            for i, msg in enumerate(session.messages, 1):
+                role = msg.role if hasattr(msg, 'role') else msg.get('role', '?')
+                content = msg.content if hasattr(msg, 'content') else msg.get('content', '')
+                preview = (content[:120] + "...") if len(content) > 120 else content
+                icon = "🧑" if "user" in str(role) else "🤖"
+                console.print(f"  {icon} [{i}/{total}] {preview}")
+            console.print(f"\n[dim]Total: {total} messages, {session.total_input_tokens + session.total_output_tokens} tokens[/dim]")
+        else:
+            print_info("No messages in current session.")
         return True
 
     # ── Buddy ──
@@ -1232,8 +1289,20 @@ async def handle_command(
 
     # ── Peers ──
     if command == "/peers":
-        print_info("Peer connections not yet configured.")
-        print_info("Use /remote-setup to configure remote connections.")
+        try:
+            from ccb.remote import RemoteManager
+            rm = RemoteManager()
+            hosts = rm.list_hosts()
+            if hosts:
+                console.print("[bold]Remote peers:[/bold]")
+                for h in hosts:
+                    status = "✅ connected" if rm.test_connection(h["host"]) else "⏸ offline"
+                    console.print(f"  {h.get('name', h['host'])} ({h['host']}:{h.get('port', 22)}) — {status}")
+            else:
+                console.print("[dim]No remote peers configured.[/dim]")
+                console.print("[dim]Use /remote-setup to add remote connections.[/dim]")
+        except Exception as e:
+            print_error(f"Peers error: {e}")
         return True
 
     # ── Bughunter ──
@@ -1391,7 +1460,20 @@ async def handle_command(
         return True
 
     if command == "/install-slack-app":
-        print_info("Slack integration coming soon.")
+        console.print("[bold]Slack Integration Setup[/bold]")
+        console.print("1. Go to https://api.slack.com/apps and create a new app")
+        console.print("2. Add the following Bot Token Scopes:")
+        console.print("   • chat:write • commands • app_mentions:read")
+        console.print("3. Install the app to your workspace")
+        console.print("4. Copy the Bot User OAuth Token")
+        console.print("5. Set it: export SLACK_BOT_TOKEN=xoxb-...")
+        console.print("")
+        import os
+        token = os.environ.get("SLACK_BOT_TOKEN", "")
+        if token:
+            console.print(f"[green]✓ SLACK_BOT_TOKEN detected ({token[:12]}...)[/green]")
+        else:
+            console.print("[yellow]⚠ SLACK_BOT_TOKEN not set[/yellow]")
         return True
 
     # ── Pipe status ──
