@@ -361,22 +361,43 @@ def _apply_left_border(
     return result
 
 
+# Module-level link target registry: display_text → url
+# Used by [text](url) markdown links where display differs from target.
+_link_targets: dict[str, str] = {}
+
+
 def _parse_inline(text: str, frags: list[tuple[str, str]]) -> None:
-    """Parse inline markdown: **bold**, `code`, *italic*."""
+    """Parse inline markdown: **bold**, `code`, *italic*, [text](url), bare URLs."""
     import re
-    # Pattern: **bold**, `code`, *italic*, rest
-    pattern = re.compile(r"(\*\*(.+?)\*\*|`(.+?)`|\*(.+?)\*)")
+    # Order matters: markdown links before bold (both use [...]), bare URLs last
+    pattern = re.compile(
+        r'(\[([^\]]+)\]\(([^)]+)\)'   # [text](url)
+        r'|\*\*(.+?)\*\*'              # **bold**
+        r'|`(.+?)`'                       # `code`
+        r'|\*(.+?)\*'                    # *italic*
+        r'|(https?://[^\s<>\)\]]+)'     # bare URL
+        r')'
+    )
     pos = 0
     for m in pattern.finditer(text):
         # Text before match
         if m.start() > pos:
             frags.append(("", text[pos:m.start()]))
-        if m.group(2):  # **bold**
-            frags.append(("class:md-bold", m.group(2)))
-        elif m.group(3):  # `code`
-            frags.append(("class:md-code", m.group(3)))
-        elif m.group(4):  # *italic*
-            frags.append(("class:md-italic", m.group(4)))
+        if m.group(2) and m.group(3):     # [text](url)
+            display = m.group(2)
+            url = m.group(3)
+            frags.append(("class:md-link", display))
+            _link_targets[display] = url
+        elif m.group(4):                   # **bold**
+            frags.append(("class:md-bold", m.group(4)))
+        elif m.group(5):                   # `code`
+            frags.append(("class:md-code", m.group(5)))
+        elif m.group(6):                   # *italic*
+            frags.append(("class:md-italic", m.group(6)))
+        elif m.group(7):                   # bare URL
+            url = m.group(7)
+            frags.append(("class:md-link", url))
+            _link_targets[url] = url
         pos = m.end()
     # Remaining text
     if pos < len(text):

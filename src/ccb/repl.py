@@ -340,7 +340,7 @@ class REPLApp:
             key_bindings=self._kb,
             style=self._style,
             full_screen=True,
-            mouse_support=True,
+            mouse_support=False,  # Off so terminal handles text selection + link clicks
         )
 
     # ── Output API (used by display.py) ─────────────────────────────────
@@ -800,7 +800,9 @@ class REPLApp:
         parts.append(("class:footer-dim", " · "))
         parts.append(("class:footer-dim", "esc+enter newline"))
         parts.append(("class:footer-dim", " · "))
-        parts.append(("class:footer-dim", "ctrl+V image"))
+        parts.append(("class:footer-dim", "pgup/dn scroll"))
+        parts.append(("class:footer-dim", " · "))
+        parts.append(("class:footer-dim", "ctrl+Y copy"))
 
         # Permission mode indicator
         try:
@@ -933,6 +935,11 @@ class REPLApp:
                 return
             asyncio.ensure_future(self._try_clipboard_image())
 
+        # Ctrl+Y: copy last assistant message to system clipboard
+        @kb.add("c-y", eager=True)
+        def _copy_last(event: Any) -> None:
+            self._copy_last_message()
+
         self._kb = kb
 
     async def _try_clipboard_image(self) -> None:
@@ -958,6 +965,46 @@ class REPLApp:
                 )
         except Exception as e:
             self.append_output(f"  ✗ Clipboard error: {e}\n", "class:msg-error")
+
+    def _copy_last_message(self) -> None:
+        """Copy the last assistant message to the system clipboard."""
+        from ccb.api.base import Role
+        # Find last assistant message
+        text = ""
+        for msg in reversed(self.session.messages):
+            if msg.role == Role.ASSISTANT and msg.content:
+                text = msg.content
+                break
+        if not text:
+            self.append_output("  No assistant message to copy.\n", "class:dim")
+            return
+        try:
+            import subprocess
+            proc = subprocess.run(
+                ["pbcopy"], input=text.encode(), check=True,
+                capture_output=True, timeout=3,
+            )
+            n_lines = text.count("\n") + 1
+            self.append_output(
+                f"  📋 Copied last response ({n_lines} lines) to clipboard.\n",
+                "class:msg-info",
+            )
+        except FileNotFoundError:
+            # Linux: try xclip / xsel
+            for cmd in (["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]):
+                try:
+                    subprocess.run(cmd, input=text.encode(), check=True, capture_output=True, timeout=3)
+                    n_lines = text.count("\n") + 1
+                    self.append_output(
+                        f"  📋 Copied last response ({n_lines} lines) to clipboard.\n",
+                        "class:msg-info",
+                    )
+                    return
+                except (FileNotFoundError, subprocess.CalledProcessError):
+                    continue
+            self.append_output("  ✗ No clipboard tool found (install pbcopy/xclip/xsel).\n", "class:msg-error")
+        except Exception as e:
+            self.append_output(f"  ✗ Copy failed: {e}\n", "class:msg-error")
 
     # ── Style ───────────────────────────────────────────────────────────
 
@@ -1003,6 +1050,7 @@ class REPLApp:
             "md-italic": "italic #cccccc",
             "md-code": "bold #56d4dd bg:#1a1a2e",     # inline code
             "md-code-block": "#56d4dd bg:#111111",     # code block
+            "md-link": "underline #58a6ff",               # URLs (blue underline, clickable in terminal)
             # Misc
             "msg-error": "bold #f44336",
             "msg-info": "#888888",
