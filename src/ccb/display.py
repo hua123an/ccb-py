@@ -858,6 +858,14 @@ def _summarize_tool_input(name: str, data: dict[str, Any]) -> str:
     if name == "agent":
         task = data.get("task", "")
         return task[:80] + ("..." if len(task) > 80 else "")
+    if name == "ask_user_question":
+        q = data.get("question", "")
+        opts = data.get("options", "")
+        n_opts = len([o.strip() for o in opts.split(",") if o.strip()]) if opts else 0
+        summary = q[:60] + ("..." if len(q) > 60 else "")
+        if n_opts:
+            summary += f" ({n_opts} options)"
+        return summary
     # Generic fallback
     import json
     return json.dumps(data, ensure_ascii=False)[:100]

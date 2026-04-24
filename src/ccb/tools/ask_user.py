@@ -36,23 +36,23 @@ class AskUserQuestionTool(Tool):
         options_str = input.get("options", "")
         options = [o.strip() for o in options_str.split(",") if o.strip()] if options_str else []
 
-        console.print(f"\n  [bold yellow]❓ {question}[/bold yellow]")
-        if options:
-            for i, opt in enumerate(options, 1):
-                console.print(f"    {i}. {opt}")
-
-        # Try REPL's async input (works inside prompt_toolkit TUI)
+        # Try REPL's async input (works inside prompt_toolkit TUI).
+        # In fullscreen REPL, console.print() writes to raw terminal and
+        # gets overwritten — we must render into the REPL's message buffer.
         try:
             from ccb.repl import get_active_repl
             repl = get_active_repl()
             if repl is not None:
                 answer = await repl.ask_user_question_async(question, options)
-                console.print(f"  [dim]→ {answer}[/dim]")
                 return ToolResult(output=answer)
         except Exception:
             pass
 
-        # Fallback: plain console input (non-TUI mode)
+        # Fallback: plain console output (non-TUI mode)
+        console.print(f"\n  [bold yellow]❓ {question}[/bold yellow]")
+        if options:
+            for i, opt in enumerate(options, 1):
+                console.print(f"    {i}. {opt}")
         try:
             answer = console.input("  [dim]Your answer >[/dim] ").strip()
             if options and answer.isdigit():

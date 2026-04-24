@@ -450,6 +450,14 @@ class REPLApp:
         """Show a question inside the REPL and wait for user input via the input buffer."""
         import asyncio
 
+        # Render question + options into the message buffer so the user can
+        # actually see them (console.print goes to raw terminal and gets
+        # overwritten by prompt_toolkit's fullscreen layout).
+        self._msg_lines.append(("class:msg-info", f"\n  ❓ {question}\n"))
+        if options:
+            for i, opt in enumerate(options, 1):
+                self._msg_lines.append(("class:msg-info", f"    {i}. {opt}\n"))
+
         self._user_question_pending = True
         self._user_question_event = asyncio.Event()
         self._user_question_answer = ""
@@ -468,6 +476,12 @@ class REPLApp:
             idx = int(answer) - 1
             if 0 <= idx < len(options):
                 answer = options[idx]
+
+        # Show the user's choice in the message area
+        display = answer if answer else "(no response)"
+        self._msg_lines.append(("class:dim", f"  → {display}\n"))
+        self._invalidate()
+
         return answer if answer else "(no response)"
 
     def ask_permission_sync(self, tool_name: str, summary: str) -> bool:
