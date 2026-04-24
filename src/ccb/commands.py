@@ -218,6 +218,31 @@ async def handle_command(
             print_error(f"Failed to load session {picked['id'][:8]}")
         return True
 
+    # ── Fork ──
+    if command == "/fork":
+        from ccb.session import Session as S
+        import copy
+        fork_name = args.strip() if args else ""
+        new_session = S(
+            cwd=session.cwd,
+            model=session.model,
+        )
+        # Deep-copy all messages into the fork
+        for msg in session.messages:
+            new_session.messages.append(copy.deepcopy(msg))
+        new_session.total_input_tokens = session.total_input_tokens
+        new_session.total_output_tokens = session.total_output_tokens
+        new_session.last_input_tokens = session.last_input_tokens
+        new_session.save()
+        parent_id = session.id[:8]
+        fork_id = new_session.id[:8]
+        print_info(f"Forked session {parent_id} → {fork_id} ({len(new_session.messages)} msgs)")
+        if fork_name:
+            print_info(f"Use '/resume {fork_id}' to switch to the fork.")
+        else:
+            print_info(f"Continue here (original), or '/resume {fork_id}' for the fork.")
+        return True
+
     # ── Config ──
     if command == "/config":
         from ccb.config import get_api_key, get_base_url, get_model, get_provider, get_active_account
@@ -335,13 +360,87 @@ async def handle_command(
 
     # ── Memory ──
     if command == "/memory":
-        from ccb.prompts import _find_claude_md
-        mds = _find_claude_md(cwd)
-        if mds:
-            for md in mds:
-                console.print(f"  📝 {md}")
+        from ccb.memory import get_store, get_extractor, build_memory_context, apply_decay
+
+        store = get_store()
+        sub = args.split(maxsplit=1) if args else []
+        sub_cmd = sub[0].lower() if sub else ""
+        sub_arg = sub[1] if len(sub) > 1 else ""
+
+        if sub_cmd == "add" and sub_arg:
+            # /memory add <text> [#tag1 #tag2]
+            parts_m = sub_arg.split("#")
+            content = parts_m[0].strip()
+            tags = [t.strip() for t in parts_m[1:] if t.strip()]
+            mem = store.add(content, tags=tags, source=session.id)
+            print_info(f"Memory added: {mem.id} ({len(content)} chars, {len(tags)} tags)")
+
+        elif sub_cmd == "list":
+            tag_filter = sub_arg.strip() if sub_arg else None
+            memories = store.list_all(tag=tag_filter)
+            if not memories:
+                console.print("  No memories stored.")
+            else:
+                console.print(f"  [bold]{len(memories)} memories:[/bold]")
+                for m in memories[:20]:
+                    tags = f" [dim][{', '.join(m.tags)}][/dim]" if m.tags else ""
+                    console.print(f"  • {m.content[:80]}{'...' if len(m.content) > 80 else ''}{tags}")
+                    console.print(f"    [dim]{m.id}  accessed {m.access_count}x[/dim]")
+
+        elif sub_cmd == "search" and sub_arg:
+            results = store.search(sub_arg)
+            if not results:
+                console.print(f"  No memories matching '{sub_arg}'.")
+            else:
+                console.print(f"  [bold]{len(results)} matches:[/bold]")
+                for m in results:
+                    console.print(f"  • {m.content[:80]}{'...' if len(m.content) > 80 else ''}")
+
+        elif sub_cmd == "delete" and sub_arg:
+            if store.delete(sub_arg.strip()):
+                print_info(f"Memory deleted: {sub_arg.strip()}")
+            else:
+                print_info(f"Memory not found: {sub_arg.strip()}")
+
+        elif sub_cmd == "extract":
+            # Extract memories from current conversation
+            extractor = get_extractor()
+            extractor.set_provider(provider)
+            print_info("Extracting memories from this conversation...")
+            extracted = await extractor.extract_from_session(session.messages, session.id)
+            if extracted:
+                print_info(f"Extracted {len(extracted)} memories:")
+                for m in extracted:
+                    console.print(f"  • {m.content[:80]}")
+            else:
+                print_info("No new memories extracted.")
+
+        elif sub_cmd == "clear":
+            count = store.clear()
+            print_info(f"Cleared {count} memories.")
+
+        elif sub_cmd == "decay":
+            pruned = apply_decay(store)
+            print_info(f"Decay applied. Pruned {pruned} stale memories.")
+
+        elif sub_cmd == "context":
+            ctx = build_memory_context(limit=15)
+            if ctx:
+                console.print(ctx)
+            else:
+                console.print("  No memory context (empty store).")
+
         else:
-            console.print("  No CLAUDE.md found. Create one in project root or ~/.claude/")
+            # Default: show summary + CLAUDE.md
+            console.print(f"  [bold]Memory store:[/bold] {store.count} memories")
+            from ccb.prompts import _find_claude_md
+            mds = _find_claude_md(cwd)
+            if mds:
+                for md in mds:
+                    console.print(f"  📝 {md}")
+            console.print()
+            console.print("  [dim]Subcommands: add, list, search, delete, extract, clear, decay, context[/dim]")
+            console.print("  [dim]Example: /memory add User prefers Python #preference #python[/dim]")
         return True
 
     # ── Diff ──
@@ -621,15 +720,42 @@ async def handle_command(
     if command == "/thinking":
         from ccb.api.anthropic_provider import AnthropicProvider
         if isinstance(provider, AnthropicProvider):
-            budget = int(args) if args and args.isdigit() else 10000
-            if state.get("thinking"):
+            arg_lower = args.strip().lower() if args else ""
+            # /thinking adaptive [budget]
+            if arg_lower.startswith("adaptive"):
+                rest = arg_lower[len("adaptive"):].strip()
+                budget = int(rest) if rest.isdigit() else 10000
+                state["thinking"] = True
+                state["thinking_mode"] = "adaptive"
+                provider.set_thinking(True, budget, mode="adaptive")
+                print_info(f"Extended thinking: ADAPTIVE (budget: {budget:,} tokens)")
+            # /thinking on [budget]
+            elif arg_lower.startswith("on"):
+                rest = arg_lower[len("on"):].strip()
+                budget = int(rest) if rest.isdigit() else 10000
+                state["thinking"] = True
+                state["thinking_mode"] = "on"
+                provider.set_thinking(True, budget, mode="on")
+                print_info(f"Extended thinking: ON (budget: {budget:,} tokens)")
+            # /thinking off
+            elif arg_lower == "off":
                 state["thinking"] = False
+                state["thinking_mode"] = "off"
                 provider.set_thinking(False)
                 print_info("Extended thinking: OFF")
+            # /thinking [budget] — toggle or set budget
             else:
-                state["thinking"] = True
-                provider.set_thinking(True, budget)
-                print_info(f"Extended thinking: ON (budget: {budget:,} tokens)")
+                budget = int(arg_lower) if arg_lower.isdigit() else 10000
+                if state.get("thinking"):
+                    state["thinking"] = False
+                    state["thinking_mode"] = "off"
+                    provider.set_thinking(False)
+                    print_info("Extended thinking: OFF")
+                else:
+                    state["thinking"] = True
+                    state["thinking_mode"] = "on"
+                    provider.set_thinking(True, budget)
+                    print_info(f"Extended thinking: ON (budget: {budget:,} tokens)")
         else:
             print_info("Extended thinking is only available with Anthropic models.")
         return True
@@ -758,17 +884,51 @@ async def handle_command(
 
     # ── Agents ──
     if command == "/agents":
+        from ccb.agent_defs import discover_agents
+        if args and args.strip():
+            # /agents <name> — activate an agent definition
+            from ccb.agent_defs import get_agent, apply_agent
+            agent = get_agent(args.strip(), cwd)
+            if not agent:
+                print_error(f"Agent '{args.strip()}' not found. Use /agents to list.")
+                return True
+            agent_prompt = apply_agent(agent, provider, state)
+            if agent_prompt:
+                state["_agent_prompt"] = agent_prompt
+            print_info(f"Agent activated: {agent.name}")
+            if agent.description:
+                console.print(f"  {agent.description}")
+            if agent.model:
+                console.print(f"  Model: {agent.model}")
+            if agent.thinking:
+                console.print(f"  Thinking: {agent.thinking}")
+            if agent.effort:
+                console.print(f"  Effort: {agent.effort}")
+            return True
+
+        # No args — list all agents
+        agents = discover_agents(cwd)
+        active = state.get("_active_agent", "")
+        # Show agent definitions
+        console.print("[bold]Agent Definitions:[/bold]")
+        if agents:
+            for a in agents:
+                marker = " ← active" if a.name == active else ""
+                src = f" [dim]({a.source})[/dim]" if a.source else " [dim](built-in)[/dim]"
+                console.print(f"  • [bold]{a.name}[/bold] — {a.description}{src}{marker}")
+        else:
+            console.print("  [dim]No agent definitions found.[/dim]")
+        console.print()
+        console.print("  [dim]Use: /agents <name> to activate[/dim]")
+        console.print("  [dim]Define: ~/.claude/agents/<name>.yaml or .claude/agents/<name>.yaml[/dim]")
+
+        # Also show running sub-agents from coordinator
         from ccb.coordinator import get_coordinator
         coord = get_coordinator()
         s = coord.summary()
-        console.print("[bold]Agent Status[/bold]")
-        console.print(f"  Total:   {s['total']}")
-        console.print(f"  Running: {s['running']}")
-        console.print(f"  Done:    {s['done']}")
-        console.print(f"  Errors:  {s['error']}")
-        if s['total'] == 0:
-            console.print("[dim]  No agents spawned. Use the 'agent' tool in conversation to create sub-agents.[/dim]")
-        else:
+        if s['total'] > 0:
+            console.print()
+            console.print(f"[bold]Running Sub-agents:[/bold] {s['running']}/{s['total']}")
             for agent in coord._agents:
                 icon = {"running": "🔄", "done": "✅", "error": "❌", "idle": "⏸"}.get(agent.status, "?")
                 console.print(f"  {icon} {agent.name} ({agent.role or 'agent'}) — {agent.status}")
@@ -1843,7 +2003,7 @@ def _print_help() -> None:
         ("/security-review", "Security audit"),
         ("/workflows", "List workflow scripts"),
         # ── Memory / Init ──
-        ("/memory", "Show CLAUDE.md files"),
+        ("/memory [sub]", "Memory: add|list|search|delete|extract|clear|context"),
         ("/init", "Create CLAUDE.md template"),
         ("/add-dir <path>", "Add working directory"),
         # ── Tools / MCP ──
@@ -1853,9 +2013,10 @@ def _print_help() -> None:
         ("/hooks", "Show hooks status"),
         ("/plan", "Show/toggle plan mode"),
         ("/tasks", "List background tasks"),
-        ("/agents", "Agent configurations"),
+        ("/agents [name]", "List/activate agent definitions"),
+        ("/fork", "Fork current session"),
         # ── UI / Preferences ──
-        ("/vim", "Toggle vim mode"),
+        ("/thinking [on|off|adaptive]", "Toggle/set thinking mode"),
         ("/theme [name]", "Change color theme"),
         ("/color [name]", "Set prompt bar color"),
         ("/output-style", "Change output style"),

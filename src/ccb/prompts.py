@@ -32,6 +32,15 @@ def get_system_prompt(cwd: str, model: str = "") -> str:
         except OSError:
             pass
 
+    # Cross-session memories
+    try:
+        from ccb.memory import build_memory_context
+        mem_ctx = build_memory_context(limit=15)
+        if mem_ctx:
+            parts.append(f"\n{mem_ctx}")
+    except Exception:
+        pass
+
     return "\n\n".join(p for p in parts if p)
 
 

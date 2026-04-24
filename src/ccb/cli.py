@@ -198,8 +198,16 @@ async def _async_main(
         finally:
             set_active_repl(None)
 
-    # Cleanup
+    # Cleanup — auto-extract memories from conversation
     session.save()
+    if len(session.messages) > 4:
+        try:
+            from ccb.memory import get_extractor
+            extractor = get_extractor()
+            extractor.set_provider(provider)
+            await extractor.extract_from_session(session.messages, session.id)
+        except Exception:
+            pass
     if mcp_manager:
         await mcp_manager.disconnect_all()
 

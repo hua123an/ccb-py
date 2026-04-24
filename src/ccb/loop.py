@@ -64,6 +64,11 @@ async def run_turn(
 
     text_mode = output_format in ("text", "json")
 
+    # Prepend agent prompt if an agent definition is active
+    agent_prompt = state.get("_agent_prompt", "")
+    if agent_prompt:
+        system_prompt = f"{agent_prompt}\n\n{system_prompt}" if system_prompt else agent_prompt
+
     # Resolve effort → max_tokens / temperature
     effort = state.get("effort", "high")
     effort_map = {"low": (4096, 0.3), "medium": (8192, 0.6), "high": (16384, 1.0)}

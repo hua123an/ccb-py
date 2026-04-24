@@ -13,6 +13,7 @@ class AnthropicProvider(Provider):
         self._model = model
         self._thinking_enabled = False
         self._thinking_budget = 10000
+        self._thinking_mode = "off"  # "off", "on", "adaptive"
         kwargs: dict[str, Any] = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
@@ -21,10 +22,20 @@ class AnthropicProvider(Provider):
     def name(self) -> str:
         return "anthropic"
 
-    def set_thinking(self, enabled: bool, budget: int = 10000) -> None:
-        """Enable/disable extended thinking."""
+    def set_thinking(self, enabled: bool, budget: int = 10000, mode: str = "") -> None:
+        """Enable/disable extended thinking.
+
+        Args:
+            enabled: Enable thinking.
+            budget: Token budget for thinking.
+            mode: 'on', 'off', or 'adaptive'. If empty, inferred from enabled.
+        """
         self._thinking_enabled = enabled
         self._thinking_budget = max(1024, budget)
+        if mode:
+            self._thinking_mode = mode
+        else:
+            self._thinking_mode = "on" if enabled else "off"
 
     async def stream(
         self,
@@ -45,12 +56,18 @@ class AnthropicProvider(Provider):
             kwargs["tools"] = self._convert_tools(tools)
 
         # Extended thinking support
-        if self._thinking_enabled:
+        if self._thinking_mode == "adaptive":
+            kwargs["thinking"] = {
+                "type": "adaptive",
+                "budget_tokens": self._thinking_budget,
+            }
+            if max_tokens < self._thinking_budget + 1024:
+                kwargs["max_tokens"] = self._thinking_budget + 4096
+        elif self._thinking_enabled:
             kwargs["thinking"] = {
                 "type": "enabled",
                 "budget_tokens": self._thinking_budget,
             }
-            # Anthropic requires max_tokens >= budget_tokens + some margin
             if max_tokens < self._thinking_budget + 1024:
                 kwargs["max_tokens"] = self._thinking_budget + 4096
 
