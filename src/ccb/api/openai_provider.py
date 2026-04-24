@@ -9,10 +9,22 @@ from openai import AsyncOpenAI
 from ccb.api.base import Message, Provider, StreamEvent, ToolCall
 
 
+def _is_reasoning_model(model: str) -> bool:
+    """Check if a model supports reasoning_effort parameter."""
+    m = model.lower()
+    # o-series: o1, o1-mini, o1-pro, o3, o3-mini, o4-mini
+    if any(m.startswith(p) for p in ("o1", "o3", "o4")):
+        return True
+    # gpt-5+: gpt-5, gpt-5.4, gpt-5.5, etc.
+    if m.startswith("gpt-5"):
+        return True
+    return False
+
+
 class OpenAIProvider(Provider):
     def __init__(self, api_key: str, model: str, base_url: str | None = None):
         self._model = model
-        kwargs: dict[str, Any] = {"api_key": api_key}
+        self._reasoning_effort: str | None = None  # None = model default
         if base_url:
             # OpenAI SDK expects base_url to end with /v1
             bu = base_url.rstrip("/")
@@ -23,6 +35,27 @@ class OpenAIProvider(Provider):
 
     def name(self) -> str:
         return "openai"
+
+    @property
+    def supports_thinking(self) -> bool:
+        return _is_reasoning_model(self._model)
+
+    def set_thinking(self, enabled: bool, budget: int = 10000, mode: str = "") -> None:
+        """Map thinking settings to OpenAI reasoning_effort.
+
+        Mapping:
+          adaptive / on  → reasoning_effort "high"
+          off            → None (model default)
+        Budget is Anthropic-specific and ignored here.
+        """
+        if not enabled and mode != "adaptive":
+            self._reasoning_effort = None
+            return
+        if mode == "adaptive":
+            # Let model decide: use "medium" so it's not always maxing out
+            self._reasoning_effort = "medium"
+        else:
+            self._reasoning_effort = "high"
 
     async def stream(
         self,
@@ -40,6 +73,9 @@ class OpenAIProvider(Provider):
         }
         if max_tokens:
             kwargs["max_tokens"] = max_tokens
+        # Reasoning effort for o-series / gpt-5+ models
+        if self._reasoning_effort and _is_reasoning_model(self._model):
+            kwargs["reasoning_effort"] = self._reasoning_effort
         if tools:
             kwargs["tools"] = self._convert_tools(tools)
             kwargs["tool_choice"] = "auto"

@@ -756,7 +756,11 @@ async def handle_command(
                     provider.set_thinking(True, budget)
                     print_info(f"Extended thinking: ON (budget: {budget:,} tokens)")
         else:
-            print_info("Extended thinking is only available with Anthropic models.")
+            model_name = getattr(provider, "_model", "")
+            print_info(
+                f"Model '{model_name}' does not support thinking/reasoning. "
+                "Supported: Claude models, o1/o3/o4 series, gpt-5+."
+            )
         return True
 
     # ── Fast ──
