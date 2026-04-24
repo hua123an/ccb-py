@@ -78,17 +78,35 @@ class Session:
             return None
 
     @classmethod
-    def list_sessions(cls, limit: int = 20) -> list[dict[str, Any]]:
+    def list_sessions(cls, limit: int = 20, cwd: str | None = None) -> list[dict[str, Any]]:
+        """List recent sessions, optionally filtered to a specific project directory.
+
+        When *cwd* is provided, only sessions whose stored ``cwd`` matches
+        (or is a subdirectory of) the given path are returned.  This keeps
+        the session list scoped to the current project.
+        """
         sessions_dir = claude_dir() / "sessions"
         if not sessions_dir.exists():
             return []
+        # Normalise filter path once
+        filter_cwd = cwd.rstrip("/") if cwd else None
         entries = []
-        for f in sorted(sessions_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]:
+        for f in sorted(sessions_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            if len(entries) >= limit:
+                break
             try:
                 data = json.loads(f.read_text())
+                sess_cwd = data.get("cwd", "")
+                # Filter by project directory
+                if filter_cwd and sess_cwd:
+                    norm = sess_cwd.rstrip("/")
+                    if norm != filter_cwd and not norm.startswith(filter_cwd + "/"):
+                        continue
+                elif filter_cwd and not sess_cwd:
+                    continue
                 entries.append({
                     "id": data.get("id", f.stem),
-                    "cwd": data.get("cwd", ""),
+                    "cwd": sess_cwd,
                     "model": data.get("model", ""),
                     "updated_at": data.get("updated_at", 0),
                     "messages": len(data.get("messages", [])),

@@ -172,7 +172,7 @@ async def handle_command(
             # Try exact ID match first
             loaded = S.load(args)
             if not loaded:
-                for entry in S.list_sessions(50):
+                for entry in S.list_sessions(50, cwd=session.cwd):
                     if args in entry["id"] or args.lower() in entry.get("cwd", "").lower():
                         loaded = S.load(entry["id"])
                         break
@@ -184,7 +184,7 @@ async def handle_command(
             return True
 
         # Interactive session picker for /resume (no args), /sessions, /continue
-        all_sessions = S.list_sessions(20)
+        all_sessions = S.list_sessions(20, cwd=session.cwd)
         if not all_sessions:
             print_info("No sessions.")
             return True
@@ -1320,25 +1320,6 @@ async def handle_command(
             print_info(f"✓ Forked session → {new_id}")
         else:
             print_info("Session fork not available (save first with /session save)")
-        return True
-
-    # ── Resume ──
-    if command in ("/resume", "/continue"):
-        from ccb.session import list_sessions
-        sessions = list_sessions()
-        if not sessions:
-            print_info("No saved sessions.")
-            return True
-        if args:
-            session.load(args.strip())
-            print_info(f"Resumed session {args}")
-        else:
-            from ccb.select_ui import select_one
-            items = [{"label": s.get("id", ""), "description": s.get("preview", "")[:40]} for s in sessions[:20]]
-            choice = await select_one(items, title="Resume Session", searchable=True)
-            if choice is not None:
-                session.load(sessions[choice]["id"])
-                print_info(f"Resumed session {sessions[choice]['id']}")
         return True
 
     # ── Attach / Detach ──

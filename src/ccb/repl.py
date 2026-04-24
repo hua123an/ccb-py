@@ -74,7 +74,7 @@ SLASH_COMMAND_DESCRIPTIONS: dict[str, str] = {
     "/summary": "Summarize current conversation",
     "/history": "Show message history",
     # Sessions
-    "/sessions": "List all saved sessions",
+    "/sessions": "List saved sessions (current project)",
     "/resume": "Resume a prior session",
     "/continue": "Continue the last session",
     "/session": "Session management",
