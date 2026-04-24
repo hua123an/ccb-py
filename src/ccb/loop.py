@@ -103,7 +103,7 @@ async def run_turn(
         # total_input_tokens (cumulative across all tool-call rounds, which
         # over-counts by ~Nx for multi-tool turns and fires prematurely).
         ctx_used = session.last_input_tokens
-        if ctx_used > ctx_limit * 0.8 and len(session.messages) > 6:
+        if ctx_used > ctx_limit * 0.9 and len(session.messages) > 6:
             print_info(f"Context usage high ({ctx_used:,}/{ctx_limit:,}). Auto-compacting...")
             from ccb.commands import _compact
             try:
@@ -129,6 +129,17 @@ async def run_turn(
             printer.start()
 
         thinking_buf = ""
+
+        # Debug logging (CCB_DEBUG=1)
+        import os as _os
+        if _os.environ.get("CCB_DEBUG"):
+            _model = getattr(provider, "_model", "?")
+            _n = len(session.messages)
+            _last_role = session.messages[-1].role.value if session.messages else "?"
+            _last_content = (session.messages[-1].content or "")[:80] if session.messages else ""
+            _has_tr = bool(session.messages[-1].tool_results) if session.messages else False
+            print_info(f"[debug] round={round_num} msgs={_n} model={_model} last={_last_role} tr={_has_tr} '{_last_content}'")
+
         max_retries = 2
         for attempt in range(max_retries + 1):
             try:
@@ -199,6 +210,14 @@ async def run_turn(
             printer.stop()
         elif text_mode and text_buf:
             sys.stdout.write("\n")
+
+        # Guard: empty response (no text, no tools) — don't silently exit
+        if not text_buf.strip() and not tool_calls:
+            print_info("Model returned empty response (may be a context or API issue).")
+            cost.end_turn()
+            if not text_mode:
+                print_usage(usage, thinking_duration_ms=thinking_duration_ms)
+            return
 
         # Record assistant message
         session.add_assistant_message(text_buf, tool_calls if tool_calls else None)

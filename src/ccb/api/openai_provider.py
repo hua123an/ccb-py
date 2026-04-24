@@ -14,7 +14,11 @@ class OpenAIProvider(Provider):
         self._model = model
         kwargs: dict[str, Any] = {"api_key": api_key}
         if base_url:
-            kwargs["base_url"] = base_url
+            # OpenAI SDK expects base_url to end with /v1
+            bu = base_url.rstrip("/")
+            if not bu.endswith("/v1"):
+                bu += "/v1"
+            kwargs["base_url"] = bu
         self._client = AsyncOpenAI(**kwargs)
 
     def name(self) -> str:

@@ -74,9 +74,18 @@ def main(
             max_tokens=max_tokens,
             classic=classic,
         ))
-    except KeyboardInterrupt:
-        click.echo("\nBye!")
-        sys.exit(0)
+    except (KeyboardInterrupt, SystemExit):
+        # Ctrl+C or /exit — use os._exit to avoid asyncio cleanup traceback
+        try:
+            click.echo("\nBye!")
+        except Exception:
+            pass
+        os._exit(0)
+    except RuntimeError as e:
+        # Suppress "Event loop stopped before Future completed" on Ctrl+C
+        if "Event loop" not in str(e):
+            raise
+        os._exit(0)
 
 
 async def _async_main(
@@ -90,7 +99,6 @@ async def _async_main(
     max_tokens: int | None = None,
     classic: bool = False,
 ) -> None:
-    from ccb.api.router import create_provider
     from ccb.config import get_model, get_permission_mode
     from ccb.display import console, print_banner, print_error, print_info, print_user_message
     from ccb.loop import run_turn
@@ -102,7 +110,10 @@ async def _async_main(
 
     cwd = os.getcwd()
     used_model = model or get_model()
+
+    from ccb.api.router import create_provider
     provider = create_provider(model=used_model)
+
     registry = create_default_registry(cwd)
 
     # Filter tools by allow/deny rules

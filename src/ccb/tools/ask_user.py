@@ -41,6 +41,18 @@ class AskUserQuestionTool(Tool):
             for i, opt in enumerate(options, 1):
                 console.print(f"    {i}. {opt}")
 
+        # Try REPL's async input (works inside prompt_toolkit TUI)
+        try:
+            from ccb.repl import get_active_repl
+            repl = get_active_repl()
+            if repl is not None:
+                answer = await repl.ask_user_question_async(question, options)
+                console.print(f"  [dim]→ {answer}[/dim]")
+                return ToolResult(output=answer)
+        except Exception:
+            pass
+
+        # Fallback: plain console input (non-TUI mode)
         try:
             answer = console.input("  [dim]Your answer >[/dim] ").strip()
             if options and answer.isdigit():

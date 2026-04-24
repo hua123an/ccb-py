@@ -324,6 +324,10 @@ class REPLApp:
         self._permission_pending = False  # permission dialog active
         self._permission_event: asyncio.Event | None = None
         self._permission_approved = False
+        # User-question prompt (ask_user_question tool)
+        self._user_question_pending = False
+        self._user_question_event: asyncio.Event | None = None
+        self._user_question_answer: str = ""
         self._refresh_handle: asyncio.Task | None = None  # periodic UI refresh during loading
         self._spinner_verb: str = "Working"  # current tool verb for footer display
         # Pending image/file attachments (populated by /image, drag-drop, Ctrl+V)
@@ -441,6 +445,30 @@ class REPLApp:
         else:
             self.append_output("✗ Denied\n", "class:msg-error")
         return approved
+
+    async def ask_user_question_async(self, question: str, options: list[str] | None = None) -> str:
+        """Show a question inside the REPL and wait for user input via the input buffer."""
+        import asyncio
+
+        self._user_question_pending = True
+        self._user_question_event = asyncio.Event()
+        self._user_question_answer = ""
+        self._invalidate()
+
+        try:
+            await asyncio.wait_for(self._user_question_event.wait(), timeout=300)
+        except asyncio.TimeoutError:
+            self._user_question_answer = "(timed out)"
+        finally:
+            self._user_question_pending = False
+            self._invalidate()
+
+        answer = self._user_question_answer.strip()
+        if options and answer.isdigit():
+            idx = int(answer) - 1
+            if 0 <= idx < len(options):
+                answer = options[idx]
+        return answer if answer else "(no response)"
 
     def ask_permission_sync(self, tool_name: str, summary: str) -> bool:
         """Synchronous wrapper — schedules async version on the running loop."""
@@ -770,6 +798,10 @@ class REPLApp:
         cost = get_cost_state()
 
         parts: list[tuple[str, str]] = []
+        if self._user_question_pending:
+            parts.append(("class:footer-loading", " ❓ Type your answer and press Enter"))
+            return parts
+
         if self._permission_pending:
             parts.append(("class:footer-loading", " ⚠ Press (y)es / (n)o / (a)lways"))
             return parts
@@ -1084,6 +1116,13 @@ class REPLApp:
         text = buffer.text.strip()
         if not text:
             return
+
+        # If a user-question prompt is waiting, resolve it with the input
+        if self._user_question_pending and self._user_question_event:
+            self._user_question_answer = text
+            self._user_question_event.set()
+            return
+
         if self._is_busy:
             return  # prevent concurrent submissions
 

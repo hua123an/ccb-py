@@ -54,30 +54,51 @@ async def handle_command(
     if command == "/model":
         from ccb.config import get_active_account, switch_account
 
-        def _persist(new_model: str) -> None:
-            """Save the picked model to accounts.json so it survives restarts."""
-            acct = get_active_account()
-            acct_name = acct.get("_name", "") if acct else ""
-            if acct_name:
-                # switch_account(name, model) with name==current just updates activeModel
-                switch_account(acct_name, new_model)
-
-        if args:
-            session.model = args
-            provider.set_model(args)
-            _persist(args)
+        def _switch_model(new_model: str) -> None:
+            """Switch model on current account — no cross-account routing."""
+            session.model = new_model
+            provider.set_model(new_model)
             acct = get_active_account()
             acct_name = acct.get("_name", "?") if acct else "?"
-            console.print(f"  Model → [bold]{args}[/bold] (account: {acct_name})")
+            switch_account(acct_name, new_model)
+            console.print(f"  Model → [bold]{new_model}[/bold] (account: {acct_name})")
+
+        if args:
+            _switch_model(args)
         else:
-            # Interactive model picker from account's models list
+            # Fetch models from current active account only
+            import httpx
             from ccb.config import load_accounts
             from ccb.select_ui import select_one
+
             acct = get_active_account()
             acct_name = acct.get("_name", "") if acct else ""
             store = load_accounts()
             profile = store.get("accounts", {}).get(acct_name, {})
-            models = profile.get("models", [])
+
+            # Try remote /models first
+            base = profile.get("baseUrl", "").rstrip("/")
+            key = profile.get("apiKey", "")
+            models: list[str] = []
+            if base and key:
+                headers = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
+                urls = [f"{base}/models"]
+                if not base.endswith("/v1"):
+                    urls.append(f"{base}/v1/models")
+                console.print(f"  [dim]Loading models from {acct_name}...[/dim]")
+                for url in urls:
+                    try:
+                        async with httpx.AsyncClient(timeout=8) as client:
+                            resp = await client.get(url, headers=headers)
+                            if resp.status_code == 200:
+                                data = resp.json()
+                                models = sorted(m["id"] for m in data.get("data", []) if "id" in m)
+                                break
+                    except Exception:
+                        continue
+            if not models:
+                models = profile.get("models", [])
+
             if not models:
                 console.print(f"  Current model: [bold]{session.model}[/bold]")
                 console.print(f"  [dim]Tip: /model <name> to switch[/dim]")
@@ -91,13 +112,16 @@ async def handle_command(
                         "label": m,
                         "description": "← current" if m == session.model else "",
                     })
-                choice = await select_one(items, title="Select Model", active=active_idx)
+                choice = await select_one(
+                    items,
+                    title=f"{acct_name} — {len(models)} models",
+                    active=active_idx,
+                    searchable=True,
+                    search_placeholder="Search models",
+                    visible_count=15,
+                )
                 if choice is not None:
-                    new_model = models[choice]
-                    session.model = new_model
-                    provider.set_model(new_model)
-                    _persist(new_model)
-                    console.print(f"  Model → [bold]{new_model}[/bold]")
+                    _switch_model(models[choice])
         return True
 
     # ── Account ──
@@ -2344,6 +2368,7 @@ async def _compact(session: Session, provider: Provider, focus: str = "") -> Non
         )
         old_count = len(session.messages)
         old_ctx = session.last_input_tokens
+
         session.messages.clear()
         session.messages.append(Message(
             role=Role.USER,
@@ -2405,17 +2430,25 @@ async def _account(args: str, provider: Provider, session: Session) -> Provider 
         api_key = profile.get("apiKey", "")
         if not base or not api_key:
             return profile.get("models", [])
+
+        headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+        # Try multiple URL patterns: base/models, then base/v1/models
+        urls = [f"{base}/models"]
+        if not base.endswith("/v1"):
+            urls.append(f"{base}/v1/models")
+
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(
-                    f"{base}/models",
-                    headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    ids = [m["id"] for m in data.get("data", []) if "id" in m]
-                    if ids:
-                        return sorted(dict.fromkeys(ids))
+                for url in urls:
+                    try:
+                        resp = await client.get(url, headers=headers)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            ids = [m["id"] for m in data.get("data", []) if "id" in m]
+                            if ids:
+                                return sorted(dict.fromkeys(ids))
+                    except Exception:
+                        continue
         except Exception:
             pass
         local_models = profile.get("models", [])
