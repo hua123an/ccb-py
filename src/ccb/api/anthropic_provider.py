@@ -22,6 +22,10 @@ class AnthropicProvider(Provider):
     def name(self) -> str:
         return "anthropic"
 
+    @property
+    def supports_thinking(self) -> bool:
+        return True
+
     def set_thinking(self, enabled: bool, budget: int = 10000, mode: str = "") -> None:
         """Enable/disable extended thinking.
 

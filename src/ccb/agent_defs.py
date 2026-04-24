@@ -149,8 +149,8 @@ def apply_agent(agent: AgentDef, provider: Any, state: dict[str, Any]) -> str:
     if agent.effort:
         state["effort"] = agent.effort
 
-    # Apply thinking
-    if agent.thinking and hasattr(provider, 'set_thinking'):
+    # Apply thinking (only for providers that support it)
+    if agent.thinking and getattr(provider, 'supports_thinking', False):
         if agent.thinking == "adaptive":
             provider.set_thinking(True, agent.thinking_budget, mode="adaptive")
             state["thinking"] = True

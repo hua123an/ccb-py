@@ -718,8 +718,7 @@ async def handle_command(
 
     # ── Thinking ──
     if command == "/thinking":
-        from ccb.api.anthropic_provider import AnthropicProvider
-        if isinstance(provider, AnthropicProvider):
+        if provider.supports_thinking:
             arg_lower = args.strip().lower() if args else ""
             # /thinking adaptive [budget]
             if arg_lower.startswith("adaptive"):

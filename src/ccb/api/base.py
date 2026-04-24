@@ -190,3 +190,12 @@ class Provider(ABC):
         """Change the model used by this provider."""
         if hasattr(self, "_model"):
             self._model = model
+
+    def set_thinking(self, enabled: bool, budget: int = 10000, mode: str = "") -> None:
+        """Configure thinking/reasoning mode. Override in subclasses."""
+        pass
+
+    @property
+    def supports_thinking(self) -> bool:
+        """Whether this provider supports extended thinking."""
+        return False
