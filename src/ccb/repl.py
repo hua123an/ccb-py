@@ -344,7 +344,7 @@ class REPLApp:
             key_bindings=self._kb,
             style=self._style,
             full_screen=True,
-            mouse_support=False,  # Off so terminal handles text selection + link clicks
+            mouse_support=True,  # On so scroll-wheel events reach our message area handler
         )
 
     # ── Output API (used by display.py) ─────────────────────────────────

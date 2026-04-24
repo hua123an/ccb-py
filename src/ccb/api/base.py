@@ -88,7 +88,16 @@ class Message:
             return {"role": self.role.value, "content": blocks}
         return {"role": self.role.value, "content": self.content}
 
-    def to_openai(self) -> dict[str, Any]:
+    def to_openai(self, use_anthropic_images: bool = False) -> dict[str, Any]:
+        """Convert to OpenAI chat format.
+
+        Args:
+            use_anthropic_images: When True, encode images in Anthropic's native
+                format (``type: image``) instead of OpenAI's ``image_url``.  Many
+                sub2api relays that proxy Claude models pass content blocks
+                straight through to the Anthropic API, so native format ensures
+                images actually reach the model.
+        """
         import json as _json
 
         if self.tool_results:
@@ -118,12 +127,24 @@ class Message:
             for img in self.images:
                 mt = img.get("media_type", "image/png")
                 b64 = img["base64_data"]
-                parts.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{mt};base64,{b64}",
-                    },
-                })
+                if use_anthropic_images:
+                    # Anthropic-native format — sub2api relays pass this
+                    # straight through to the Anthropic API.
+                    parts.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mt,
+                            "data": b64,
+                        },
+                    })
+                else:
+                    parts.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mt};base64,{b64}",
+                        },
+                    })
             for fc in self.files:
                 fname = fc.get("filename", "file")
                 fcontent = fc.get("content", "")

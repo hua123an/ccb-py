@@ -140,13 +140,17 @@ class OpenAIProvider(Provider):
             usage=total_usage,
         )
 
-    @staticmethod
-    def _build_messages(messages: list[Message], system: str) -> list[dict[str, Any]]:
+    def _build_messages(self, messages: list[Message], system: str) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         if system:
             result.append({"role": "system", "content": system})
+        # When the model is Claude running behind an OpenAI-compatible relay
+        # (sub2api, windsurf, etc.), use Anthropic-native image format so the
+        # relay can pass image blocks straight through to the Anthropic API.
+        from ccb.api.router import _is_claude_model
+        use_anthro_img = _is_claude_model(self._model)
         for m in messages:
-            converted = m.to_openai()
+            converted = m.to_openai(use_anthropic_images=use_anthro_img)
             if isinstance(converted, list):
                 result.extend(converted)
             else:

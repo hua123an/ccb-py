@@ -264,9 +264,10 @@ def _md_to_ptk(md_text: str) -> list[tuple[str, str]]:
     import re
 
     frags: list[tuple[str, str]] = []
-    lines = md_text.split("\n")
+    lines = md_text.strip().split("\n")
     in_code_block = False
     code_buf: list[str] = []
+    prev_blank = False  # track consecutive blank lines
 
     for line in lines:
         # Code block fences
@@ -279,11 +280,21 @@ def _md_to_ptk(md_text: str) -> list[tuple[str, str]]:
                 in_code_block = False
             else:
                 in_code_block = True
+            prev_blank = False
             continue
 
         if in_code_block:
             code_buf.append(line)
             continue
+
+        # Blank line — collapse consecutive blanks into at most one
+        if not line.strip():
+            if prev_blank:
+                continue  # skip consecutive blank
+            prev_blank = True
+            frags.append(("", "\n"))
+            continue
+        prev_blank = False
 
         # Headings
         m = re.match(r"^(#{1,3})\s+(.*)", line)
@@ -306,11 +317,6 @@ def _md_to_ptk(md_text: str) -> list[tuple[str, str]]:
             indent = m.group(1)
             frags.append(("", f"{indent}   "))
             _parse_inline(m.group(2), frags)
-            frags.append(("", "\n"))
-            continue
-
-        # Blank line
-        if not line.strip():
             frags.append(("", "\n"))
             continue
 
@@ -349,8 +355,12 @@ def _apply_left_border(
                 current.append((style, part))
             if i < len(parts) - 1:
                 # End of a line — emit border + accumulated content + newline
-                result.append((border_style, border_char))
-                result.extend(current)
+                if current:
+                    result.append((border_style, border_char))
+                    result.extend(current)
+                else:
+                    # Blank line — just the border, no trailing space
+                    result.append((border_style, "  ┃"))
                 result.append(("", "\n"))
                 current = []
     # Flush trailing partial line (no terminating \n in original)
