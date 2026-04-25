@@ -944,36 +944,103 @@ async def handle_command(
         console.print(f"  Tool calls this session: {tc_count}")
         return True
 
-    # ── Checkpoint / Restore ──
-    if command == "/checkpoint":
-        proc = await asyncio.create_subprocess_exec(
-            "git", "stash", "push", "-m", f"ccb-checkpoint-{int(time.time())}", cwd=cwd,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    # ── Snapshot / Restore ──
+    if command == "/snapshot":
+        from ccb.workspace_snapshot import get_snapshot_manager
+        mgr = get_snapshot_manager()
+        
+        if args == "list":
+            snaps = mgr.list_all()
+            if not snaps:
+                console.print("  No snapshots.")
+            else:
+                console.print(f"  [bold]{len(snaps)} snapshots:[/bold]")
+                for s in snaps[:10]:
+                    time_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(s.created_at))
+                    dirty = " [yellow](dirty)[/yellow]" if s.git_dirty else ""
+                    console.print(f"  • {s.id[:20]}… {time_str} {s.git_branch}:{s.git_commit[:8]}{dirty}")
+                    console.print(f"    {s.description[:60]}")
+            return True
+        
+        if args == "delete" and arg:
+            if mgr.delete(arg.strip()):
+                print_info(f"Deleted snapshot: {arg.strip()[:20]}...")
+            else:
+                print_error(f"Snapshot not found: {arg.strip()}")
+            return True
+        
+        # Create new snapshot
+        desc = arg if arg else ""
+        snap = mgr.create(
+            cwd=cwd,
+            description=desc,
+            session_id=session.id,
+            session_messages_count=len(session.messages),
         )
-        stdout, _ = await proc.communicate()
-        output = stdout.decode().strip()
-        print_info(output if output else "Checkpoint created (nothing to stash)")
+        print_info(f"Snapshot created: {snap.id[:20]}...")
+        console.print(f"  Branch: {snap.git_branch}")
+        console.print(f"  Commit: {snap.git_commit}")
+        console.print(f"  Dirty: {'yes' if snap.git_dirty else 'no'}")
+        console.print(f"  Untracked: {len(snap.git_untracked_files)} files")
+        console.print(f"  Deps tracked: {len(snap.dep_manifests)} manifests")
         return True
 
     if command == "/restore":
-        proc = await asyncio.create_subprocess_exec(
-            "git", "stash", "list", cwd=cwd,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        stashes = stdout.decode().strip()
-        if not stashes:
-            print_info("No checkpoints to restore.")
+        from ccb.workspace_snapshot import get_snapshot_manager
+        mgr = get_snapshot_manager()
+        
+        if not args:
+            # List available snapshots
+            snaps = mgr.list_all()
+            if not snaps:
+                console.print("  No snapshots available. Use /snapshot to create one.")
+            else:
+                console.print("  [bold]Available snapshots:[/bold]")
+                for s in snaps[:15]:
+                    time_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(s.created_at))
+                    dirty = " [yellow]*[/yellow]" if s.git_dirty else ""
+                    console.print(f"  • {s.id[:25]} — {time_str}")
+                    console.print(f"    {s.git_branch}:{s.git_commit[:8]}{dirty} — {s.description[:50]}")
+                console.print("\n  [dim]Usage: /restore <snapshot_id>[/dim]")
             return True
-        if args:
-            proc2 = await asyncio.create_subprocess_exec(
-                "git", "stash", "pop", args, cwd=cwd,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-            out, err = await proc2.communicate()
-            print_info(out.decode().strip() or err.decode().strip())
+        
+        # Load and restore
+        snap_id = args.strip()
+        snap = mgr.load(snap_id)
+        if not snap:
+            # Try partial match
+            for s in mgr.list_all():
+                if s.id.startswith(snap_id):
+                    snap = s
+                    break
+        
+        if not snap:
+            print_error(f"Snapshot not found: {snap_id}")
+            return True
+        
+        console.print(f"[bold]Restoring snapshot:[/bold] {snap.id[:25]}...")
+        
+        # Show comparison first
+        changes = mgr.compare(snap, cwd)
+        if changes.get("git_commit_changed"):
+            console.print(f"  Git: {changes['current_commit']} → {changes['snapshot_commit']}")
+        if changes.get("deps_changed"):
+            console.print(f"  Dependencies changed: {', '.join(changes['deps_changed'])}")
+        
+        # Restore git state
+        result = mgr.restore_git(snap, cwd)
+        if result["success"]:
+            print_info("Git state restored")
+            for step in result.get("steps", []):
+                console.print(f"  • {step}")
         else:
-            console.print(stashes)
+            print_error(f"Restore failed: {result.get('error', 'unknown error')}")
+        
+        # Offer to resume session if available
+        if snap.session_id and snap.session_id != session.id:
+            console.print(f"\n  [dim]Session context: {snap.session_messages_count} messages in snapshot[/dim]")
+            console.print(f"  [dim]Use /resume {snap.session_id[:8]} to restore session[/dim]")
+        
         return True
 
     # ── Rewind ──
@@ -1043,8 +1110,64 @@ async def handle_command(
 
     # ── Sandbox Toggle ──
     if command == "/sandbox":
-        state["sandbox"] = not state.get("sandbox", False)
-        print_info(f"Sandbox mode: {'ON' if state['sandbox'] else 'OFF'}")
+        from ccb.sandbox_exec import get_sandbox
+        from ccb.state import get_state as get_global_state
+
+        sandbox = get_sandbox()
+        global_state = get_global_state()
+
+        if args == "status":
+            # Show detailed status
+            info = sandbox.info()
+            console.print(f"[bold]Sandbox Status[/bold]")
+            console.print(f"  Backend: {info['backend']}")
+            console.print(f"  Available: {'yes' if info['available'] else 'no'}")
+            console.print(f"  Enabled: {'yes' if info['enabled'] else 'no'}")
+            console.print(f"  Timeout: {info['timeout']}s")
+            console.print(f"  Docker image: {info['docker_image']}")
+            if info['allowed_paths']:
+                console.print(f"  Allowed paths: {', '.join(info['allowed_paths'])}")
+            return True
+
+        if args == "on":
+            if not sandbox.available:
+                print_error(f"No sandbox backend available. Install Docker, or use macOS sandbox-exec.")
+                return True
+            sandbox.enable()
+            state["sandbox"] = True
+            global_state.set("sandbox_mode", True)
+            print_info(f"Sandbox mode: ON ({sandbox.backend_name})")
+        elif args == "off":
+            sandbox.disable()
+            state["sandbox"] = False
+            global_state.set("sandbox_mode", False)
+            print_info("Sandbox mode: OFF")
+        elif args == "allow":
+            path = arg.strip() if arg else cwd
+            sandbox.allow_path(path)
+            print_info(f"Allowed path: {path}")
+        elif args == "image":
+            if arg:
+                sandbox.set_docker_image(arg)
+                print_info(f"Docker image: {arg}")
+            else:
+                print_info(f"Current Docker image: {sandbox._docker_image}")
+        else:
+            # Toggle
+            new_state = not state.get("sandbox", False)
+            state["sandbox"] = new_state
+            global_state.set("sandbox_mode", new_state)
+            if new_state:
+                if sandbox.available:
+                    sandbox.enable()
+                    print_info(f"Sandbox mode: ON ({sandbox.backend_name})")
+                else:
+                    print_error(f"Cannot enable: no backend available (docker/macos-sandbox/firejail)")
+                    state["sandbox"] = False
+                    global_state.set("sandbox_mode", False)
+            else:
+                sandbox.disable()
+                print_info("Sandbox mode: OFF")
         return True
 
     # ── Output Style ──
@@ -1994,8 +2117,9 @@ def _print_help() -> None:
         ("/commit", "AI-assisted git commit"),
         ("/undo", "Undo last git commit"),
         ("/redo", "Redo last undo"),
-        ("/checkpoint", "Save git checkpoint"),
-        ("/restore [ref]", "Restore from checkpoint"),
+        ("/snapshot [desc]", "Save workspace snapshot (git+deps+env)"),
+        ("/restore [id]", "Restore from workspace snapshot"),
+        ("/sandbox [on|off|status]", "Toggle sandbox mode for safe execution"),
         ("/rewind [n]", "Remove last n messages"),
         # ── Skills / Review ──
         ("/skills", "List available skills"),

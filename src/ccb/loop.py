@@ -414,6 +414,7 @@ async def run_agent(
     input_data: dict[str, Any],
     registry: ToolRegistry,
     cwd: str,
+    force_sandbox: bool = True,
 ) -> str:
     """Run a sub-agent with its own conversation context.
 
@@ -423,15 +424,23 @@ async def run_agent(
       - contextvar ``_inside_agent = True`` marks the entire call tree,
         which causes permission prompts and noisy tool output to route to
         the progress dashboard instead of the parent REPL.
+      - Optional: Forced sandbox mode for secure execution (default on).
 
     Budget: ``max_tool_rounds=80`` — deliberately generous. Per user's
     preference, quality > token cost; cap only exists to prevent runaway
     recursion, not to save tokens.
+
+    Args:
+        input_data: Agent task specification with "task" field
+        registry: Tool registry for the agent
+        cwd: Working directory
+        force_sandbox: If True, enforce sandbox mode even if parent disabled it
     """
     from ccb.api.router import create_provider
     from ccb.prompts import get_system_prompt
     from ccb.agent_context import enter_agent
     from ccb.display import agent_register, agent_complete
+    from ccb.state import get_state
 
     global _agent_counter
     _agent_counter += 1
@@ -446,7 +455,23 @@ async def run_agent(
 
     agent_register(label, task)
 
+    # Agent sandbox: temporarily enable if requested
+    state = get_state()
+    original_sandbox = state.get("sandbox_mode", False) if state else False
+    sandbox_restored = False
+
     try:
+        # Force sandbox for agent if requested and available
+        if force_sandbox and not original_sandbox:
+            from ccb.sandbox_exec import get_sandbox
+            sandbox = get_sandbox()
+            if sandbox.available:
+                sandbox.enable()
+                state.set("sandbox_mode", True)
+                sandbox_restored = True
+                # Set stricter limits for agent
+                sandbox.set_timeout(60)  # Shorter timeout for agents
+
         provider = create_provider()
         agent_session = Session(cwd=cwd)
         agent_session.add_user_message(task)
@@ -469,3 +494,11 @@ async def run_agent(
     except Exception as e:
         agent_complete(label, f"error: {e}")
         raise
+    finally:
+        # Restore original sandbox state
+        if sandbox_restored and state:
+            state.set("sandbox_mode", original_sandbox)
+            # Restore timeout
+            from ccb.sandbox_exec import get_sandbox
+            sandbox = get_sandbox()
+            sandbox.set_timeout(30)  # Reset to default

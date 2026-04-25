@@ -39,6 +39,65 @@ class BashTool(Tool):
         if not command.strip():
             return ToolResult(output="Error: empty command", is_error=True)
 
+        # Check if sandbox mode is enabled via global state
+        from ccb.state import get_state
+        state = get_state()
+        sandbox_enabled = state.get("sandbox_mode", False) if state else False
+
+        if sandbox_enabled:
+            return await self._execute_sandbox(command, cwd, timeout)
+        else:
+            return await self._execute_direct(command, cwd, timeout)
+
+    async def _execute_sandbox(self, command: str, cwd: str, timeout: int) -> ToolResult:
+        """Execute via SandboxExecutor for isolation."""
+        from ccb.sandbox_exec import get_sandbox
+
+        sandbox = get_sandbox()
+        if not sandbox.enabled:
+            # Auto-enable if available
+            if sandbox.available:
+                sandbox.enable()
+            else:
+                return ToolResult(
+                    output="Sandbox mode enabled but no backend available (docker/macos-sandbox/firejail)",
+                    is_error=True,
+                )
+
+        # Validate command before execution
+        ok, msg = sandbox.validate_command(command)
+        if not ok:
+            return ToolResult(output=f"Sandbox validation failed: {msg}", is_error=True)
+
+        # Execute in sandbox with timeout
+        result = await sandbox.execute(command, cwd)
+
+        output_parts = []
+        if result.stdout:
+            output_parts.append(result.stdout)
+        if result.stderr:
+            output_parts.append(result.stderr)
+        output = "\n".join(output_parts).rstrip()
+
+        if result.timed_out:
+            output = f"[Sandbox timeout after {sandbox._timeout}s]\n{output}"
+
+        # Add sandbox indicator to output
+        prefix = f"[{sandbox.backend_name}] "
+        if result.exit_code != 0:
+            output = f"{prefix}Exit code: {result.exit_code}\n{output}"
+        else:
+            output = f"{prefix}{output}" if output else f"{prefix}(no output)"
+
+        # Truncate very long output
+        max_len = 100_000
+        if len(output) > max_len:
+            output = output[:max_len] + f"\n... (truncated, {len(output)} total chars)"
+
+        return ToolResult(output=output, is_error=result.exit_code != 0 or result.timed_out)
+
+    async def _execute_direct(self, command: str, cwd: str, timeout: int) -> ToolResult:
+        """Direct execution without sandbox (original behavior)."""
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
