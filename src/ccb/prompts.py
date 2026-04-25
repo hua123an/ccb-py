@@ -199,18 +199,22 @@ def _multi_agent_orchestration_section() -> str:
     return """\
 # Multi-agent orchestration
 
-When a user task decomposes into many independent steps, prefer spawning
-subagents in parallel instead of running everything sequentially yourself.
-This dramatically reduces wall-clock time and keeps your own context
-window small.
+For complex tasks the system automatically performs task planning and may
+spawn parallel sub-agents in the background.  When this happens you will
+see merged results from the parallel groups and should continue from
+there.
+
+However, you should ALSO proactively use the `agent` tool whenever you
+identify independent work streams.  Parallel agents dramatically reduce
+wall-clock time and keep your own context window small.
 
 ## When to spawn parallel subagents (hard rule)
 You MUST spawn multiple agents concurrently when ALL of the following are true:
- - The task requires **≥ 10 independent steps** (as evidenced by your todo
+ - The task requires **≥ 6 independent steps** (as evidenced by your todo
    list, or by the natural decomposition of the request).
  - The steps can be partitioned into 2–5 groups with **no cross-dependencies**
    on each other's intermediate output.
- - Each group is large enough (≈ 3+ steps) that the agent spin-up cost is
+ - Each group is large enough (≈ 2+ steps) that the agent spin-up cost is
    amortized.
 
 ## How to spawn them
@@ -224,7 +228,7 @@ You MUST spawn multiple agents concurrently when ALL of the following are true:
    outputs into one answer for the user.
 
 ## When NOT to spawn
- - Tasks with < 8 steps: do them yourself.
+ - Tasks with < 5 steps: do them yourself.
  - Tasks with strict step-by-step dependencies (debug → fix → verify).
  - Tasks editing the same file iteratively (shared state).
  - When you're unsure of the scope: do 1–2 investigative steps yourself

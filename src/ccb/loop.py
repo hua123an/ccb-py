@@ -95,6 +95,41 @@ async def run_turn(
     cost.set_model(getattr(provider, "_model", ""))
     cost.start_turn()
 
+    # ── Task Planning: auto-decompose on first round when new user message arrives ──
+    plan_result: dict[str, Any] | None = None
+    last_msg = session.messages[-1] if session.messages else None
+    if (
+        last_msg
+        and last_msg.role == Role.USER
+        and not last_msg.tool_results
+        and (last_msg.content or "").strip()
+    ):
+        plan_result = await _run_task_planning(
+            session, provider, system_prompt, text_mode, stream_json
+        )
+        if plan_result:
+            total_steps = len(plan_result.get("steps", []))
+            complexity = plan_result.get("complexity", "low")
+            if not text_mode and not stream_json:
+                print_info(
+                    f"  📋 Planning: {total_steps} steps, complexity={complexity}"
+                )
+            # If complex enough, auto-parallelize immediately using the plan
+            if total_steps >= 4 or complexity in ("medium", "high"):
+                success = await _run_parallel_from_plan(
+                    plan_result,
+                    session,
+                    provider,
+                    registry,
+                    system_prompt,
+                    max_tokens,
+                    text_mode,
+                    stream_json,
+                )
+                if success:
+                    # After parallel execution, inject plan into context
+                    pass  # _run_parallel_from_plan already injected assistant+user msgs
+
     for round_num in range(max_tool_rounds):
         # Budget check
         if token_budget:
@@ -632,6 +667,159 @@ async def _try_auto_parallelize(
 
     session.add_assistant_message(
         f"Decomposed remaining work into {len(subtasks)} parallel subtasks."
+    )
+    session.add_user_message(merged)
+
+    if not text_mode and not stream_json:
+        print_info("  ⇶ Auto-parallelization complete. Resuming main agent...")
+
+    return True
+
+
+async def _run_task_planning(
+    session: Session,
+    provider: Provider,
+    system_prompt: str,
+    text_mode: bool,
+    stream_json: bool,
+) -> dict[str, Any] | None:
+    """Analyze the latest user message and break it into granular steps.
+
+    Returns a dict with complexity, total_steps, steps list.  Returns None
+    on parse failure or if the message is too short.
+    """
+    last_content = (session.messages[-1].content or "").strip() if session.messages else ""
+    if len(last_content) < 30:
+        return None
+
+    planning_msg = Message(
+        role=Role.USER,
+        content=(
+            "你是任务规划专家。请把上面的用户请求拆解成尽可能细小的、原子化的可执行步骤。\n\n"
+            "每个步骤必须是单一操作，例如：\n"
+            '- "读取文件 /path/to/file.py"\n'
+            '- "修改第 12 行的函数名 foo 为 bar"\n'
+            '- "运行测试 test_foo.py"\n'
+            '- "搜索代码中的 TODO 标记"\n'
+            '- "检查变量 bar 的所有引用"\n\n'
+            "拆分的原则是：每个步骤只做一个动作，绝不合并多个动作。"
+            "步骤越细，完成度和准确度越高。宁可多拆几步，也不要把多个操作塞进一个步骤。\n\n"
+            "评估复杂度：\n"
+            "- low: <= 3 步，单文件修改\n"
+            "- medium: 4-7 步，跨文件修改但逻辑简单\n"
+            "- high: >= 8 步，或涉及架构设计、多模块重构\n\n"
+            "返回严格的 JSON 格式（不要 markdown 代码块）：\n"
+            '{"complexity":"low|medium|high","total_steps":数字,"steps":["步骤1","步骤2",...]}'
+        ),
+    )
+
+    temp_messages = session.messages + [planning_msg]
+
+    if not text_mode and not stream_json:
+        print_info("  📋 Analyzing task complexity...")
+
+    raw = ""
+    try:
+        async with asyncio.timeout(30):
+            async for event in provider.stream(
+                messages=temp_messages,
+                tools=[],
+                system=system_prompt,
+                max_tokens=2048,
+            ):
+                if event.type == "text":
+                    raw += event.text
+                elif event.type == "done":
+                    break
+                elif event.type == "error":
+                    return None
+    except Exception:
+        return None
+
+    # Parse JSON
+    try:
+        cleaned = raw.strip()
+        if "```" in cleaned:
+            parts = cleaned.split("```")
+            for part in parts[1:]:
+                part = part.replace("json", "").strip()
+                if part.startswith("{"):
+                    cleaned = part
+                    break
+        result = json_mod.loads(cleaned)
+        if not isinstance(result.get("steps"), list):
+            return None
+        result["total_steps"] = len(result.get("steps", []))
+        return result
+    except Exception:
+        return None
+
+
+async def _run_parallel_from_plan(
+    plan: dict[str, Any],
+    session: Session,
+    provider: Provider,
+    registry: ToolRegistry,
+    system_prompt: str,
+    max_tokens: int,
+    text_mode: bool,
+    stream_json: bool,
+) -> bool:
+    """Execute a pre-made plan using parallel sub-agents.
+
+    Returns True if parallel execution was performed.
+    """
+    steps = plan.get("steps", [])
+    if len(steps) < 2:
+        return False
+
+    # Get parallel groups from plan, or auto-group
+    groups = plan.get("parallel_groups")
+    if not groups or not isinstance(groups, list):
+        group_size = 2 if len(steps) <= 6 else 3
+        groups = []
+        for i in range(0, len(steps), group_size):
+            groups.append(list(range(i, min(i + group_size, len(steps)))))
+
+    if not text_mode and not stream_json:
+        print_info(
+            f"  ⇶ Auto-parallelizing {len(steps)} steps into {len(groups)} groups"
+        )
+
+    from ccb.coordinator import Coordinator
+
+    coord = Coordinator(max_agents=min(len(groups), 5))
+
+    async def _executor(task_text: str) -> str:
+        return await run_agent({"task": task_text}, registry, session.cwd)
+
+    agents = []
+    for i, group in enumerate(groups):
+        group_steps = [
+            steps[idx]
+            for idx in group
+            if isinstance(idx, int) and idx < len(steps)
+        ]
+        if not group_steps:
+            continue
+        task_desc = "\n".join(f"- {s}" for s in group_steps)
+        agent = coord.create_agent(f"plan-group-{i + 1}", prompt=task_desc)
+        agents.append(agent)
+
+    if len(agents) < 2:
+        return False
+
+    results = await coord.run_parallel(agents, _executor)
+
+    merged_parts = []
+    for i, (agent, result) in enumerate(zip(agents, results)):
+        merged_parts.append(f"### Group {i + 1}: {agent.prompt}\n\n{result}")
+
+    merged = "Task plan execution results:\n\n" + "\n\n".join(merged_parts)
+
+    session.add_assistant_message(
+        f"Based on the task plan ({len(steps)} steps, complexity={plan.get('complexity', '?')}), "
+        f"I executed {len(agents)} parallel groups of subtasks."
     )
     session.add_user_message(merged)
 
