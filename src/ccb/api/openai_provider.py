@@ -25,12 +25,15 @@ class OpenAIProvider(Provider):
     def __init__(self, api_key: str, model: str, base_url: str | None = None):
         self._model = model
         self._reasoning_effort: str | None = None  # None = model default
+        kwargs: dict[str, Any] = {"api_key": api_key}
         if base_url:
             # OpenAI SDK expects base_url to end with /v1
             bu = base_url.rstrip("/")
             if not bu.endswith("/v1"):
                 bu += "/v1"
             kwargs["base_url"] = bu
+        # Set explicit timeouts: 30s connect, 120s read (image uploads need time)
+        kwargs["timeout"] = {"connect": 30, "read": 120, "write": 30, "pool": 5}
         self._client = AsyncOpenAI(**kwargs)
 
     def name(self) -> str:

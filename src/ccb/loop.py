@@ -148,44 +148,47 @@ async def run_turn(
         max_retries = 2
         for attempt in range(max_retries + 1):
             try:
-                async for event in provider.stream(
+                # Stream with overall timeout: 180s covers image upload + generation
+                stream_coro = provider.stream(
                     messages=session.messages,
                     tools=all_tool_schemas,
                     system=system_prompt,
                     max_tokens=max_tokens,
-                ):
-                    if event.type == "text":
-                        text_buf += event.text
-                        if text_mode:
-                            sys.stdout.write(event.text)
-                            sys.stdout.flush()
-                        elif printer:
-                            printer.feed(event.text)
+                )
+                async with asyncio.timeout(180):
+                    async for event in stream_coro:
+                        if event.type == "text":
+                            text_buf += event.text
+                            if text_mode:
+                                sys.stdout.write(event.text)
+                                sys.stdout.flush()
+                            elif printer:
+                                printer.feed(event.text)
 
-                    elif event.type == "thinking":
-                        if not thinking_buf and not thinking_start:
-                            thinking_start = time.time()
-                        thinking_buf += event.text
-                        if not text_mode and printer:
-                            printer.feed_thinking(event.text)
+                        elif event.type == "thinking":
+                            if not thinking_buf and not thinking_start:
+                                thinking_start = time.time()
+                            thinking_buf += event.text
+                            if not text_mode and printer:
+                                printer.feed_thinking(event.text)
 
-                    elif event.type == "tool_use_end":
-                        if event.tool_call:
-                            tool_calls.append(event.tool_call)
+                        elif event.type == "tool_use_end":
+                            if event.tool_call:
+                                tool_calls.append(event.tool_call)
 
-                    elif event.type == "done":
-                        usage = event.usage
-                        if thinking_start:
-                            thinking_duration_ms = (time.time() - thinking_start) * 1000
-                        break
+                        elif event.type == "done":
+                            usage = event.usage
+                            if thinking_start:
+                                thinking_duration_ms = (time.time() - thinking_start) * 1000
+                            break
 
-                    elif event.type == "error":
-                        if printer:
-                            printer.stop()
-                        print_error(event.error or "Unknown API error")
-                        return
+                        elif event.type == "error":
+                            if printer:
+                                printer.stop()
+                            print_error(event.error or "Unknown API error")
+                            return
 
-                break  # success — exit retry loop
+                    break  # success — exit retry loop
 
             except KeyboardInterrupt:
                 if printer:
