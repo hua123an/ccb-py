@@ -16,7 +16,7 @@ from ccb import __version__
 @click.option("-m", "--model", default=None, help="Model to use.")
 @click.option("-r", "--resume", default=None, help="Resume a session by ID.")
 @click.option("--bare", is_flag=True, help="Minimal mode, no plugins/MCP.")
-@click.option("--output-format", default="rich", type=click.Choice(["rich", "text", "json"]), help="Output format.")
+@click.option("--output-format", default="rich", type=click.Choice(["rich", "text", "json", "stream-json"]), help="Output format.")
 @click.option("--allowed-tools", default=None, help="Comma-separated list of allowed tool patterns.")
 @click.option("--disallowed-tools", default=None, help="Comma-separated list of denied tool patterns.")
 @click.option("--system-prompt", default=None, help="Override system prompt.")
@@ -158,6 +158,11 @@ async def _async_main(
 
     # Non-interactive mode
     if not interactive and initial_prompt:
+        # Emit session info for stream-json consumers (e.g. desktop GUI)
+        if output_format == "stream-json":
+            import json as _json
+            sys.stdout.write(_json.dumps({"type": "session:started", "sessionId": session.id}) + "\n")
+            sys.stdout.flush()
         session.add_user_message(initial_prompt)
         await run_turn(
             provider, session, registry, system_prompt,

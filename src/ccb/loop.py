@@ -63,6 +63,7 @@ async def run_turn(
     state = state or {}
 
     text_mode = output_format in ("text", "json")
+    stream_json = output_format == "stream-json"
 
     # Prepend agent prompt if an agent definition is active
     agent_prompt = state.get("_agent_prompt", "")
@@ -129,7 +130,7 @@ async def run_turn(
         thinking_duration_ms: float = 0.0
 
         printer: StreamPrinter | None = None
-        if not text_mode:
+        if not text_mode and not stream_json:
             printer = StreamPrinter()
             printer.start()
 
@@ -162,6 +163,10 @@ async def run_turn(
                             if text_mode:
                                 sys.stdout.write(event.text)
                                 sys.stdout.flush()
+                            elif stream_json:
+                                _sj_line = json_mod.dumps({'type': 'content_block_delta', 'delta': {'text': event.text}})
+                                sys.stdout.write(_sj_line + '\n')
+                                sys.stdout.flush()
                             elif printer:
                                 printer.feed(event.text)
 
@@ -172,14 +177,30 @@ async def run_turn(
                             if not text_mode and printer:
                                 printer.feed_thinking(event.text)
 
+                            if stream_json:
+                                _sj_line = json_mod.dumps({'type': 'thinking', 'text': event.text})
+                                sys.stdout.write(_sj_line + '\n')
+                                sys.stdout.flush()
+
                         elif event.type == "tool_use_end":
                             if event.tool_call:
                                 tool_calls.append(event.tool_call)
+
+                            if stream_json and event.tool_call:
+                                tc = event.tool_call
+                                _sj_line = json_mod.dumps({'type': 'tool_use', 'id': tc.id, 'name': tc.name, 'input': tc.input})
+                                sys.stdout.write(_sj_line + '\n')
+                                sys.stdout.flush()
 
                         elif event.type == "done":
                             usage = event.usage
                             if thinking_start:
                                 thinking_duration_ms = (time.time() - thinking_start) * 1000
+
+                            if stream_json:
+                                _sj_line = json_mod.dumps({'type': 'done', 'usage': event.usage})
+                                sys.stdout.write(_sj_line + '\n')
+                                sys.stdout.flush()
                             break
 
                         elif event.type == "error":
@@ -216,14 +237,14 @@ async def run_turn(
 
         if printer:
             printer.stop()
-        elif text_mode and text_buf:
+        elif (text_mode or stream_json) and text_buf:
             sys.stdout.write("\n")
 
         # Guard: empty response (no text, no tools) — don't silently exit
         if not text_buf.strip() and not tool_calls:
             print_info("Model returned empty response (may be a context or API issue).")
             cost.end_turn()
-            if not text_mode:
+            if not text_mode and not stream_json:
                 print_usage(usage, thinking_duration_ms=thinking_duration_ms)
             return
 
@@ -236,7 +257,7 @@ async def run_turn(
         if not tool_calls:
             cost.end_turn()
 
-        if not text_mode:
+        if not text_mode and not stream_json:
             print_usage(usage, thinking_duration_ms=thinking_duration_ms)
 
         if not tool_calls:
@@ -250,6 +271,24 @@ async def run_turn(
             session.save()
             return
         session.add_tool_results(results)
+
+        # Auto-parallelize after 10 sequential tool rounds
+        if round_num == 10:
+            success = await _try_auto_parallelize(
+                session, provider, registry, system_prompt, max_tokens,
+                text_mode, stream_json,
+            )
+            if success:
+                # Parallel results injected into session; next round sees merged output
+                pass
+
+        # Emit tool results for stream-json mode
+        if stream_json:
+            for _tc, _tr in zip(tool_calls, results):
+                _sj_line = json_mod.dumps({'type': 'tool_result', 'tool_use_id': _tr.tool_use_id, 'content': _tr.content[:2000], 'is_error': _tr.is_error})
+                sys.stdout.write(_sj_line + '\n')
+                sys.stdout.flush()
+
 
         # Save session after each tool round
         session.save()
@@ -505,3 +544,98 @@ async def run_agent(
             from ccb.sandbox_exec import get_sandbox
             sandbox = get_sandbox()
             sandbox.set_timeout(30)  # Reset to default
+
+
+async def _try_auto_parallelize(
+    session: Session,
+    provider: Provider,
+    registry: ToolRegistry,
+    system_prompt: str,
+    max_tokens: int,
+    text_mode: bool,
+    stream_json: bool,
+) -> bool:
+    """After 10 sequential tool rounds, auto-decompose into parallel sub-agents.
+
+    Returns True if parallelization was performed.
+    """
+    # Build decompose prompt
+    decompose_msg = Message(
+        role=Role.USER,
+        content=(
+            "This complex task has already run 10 tool rounds. "
+            "Decompose the remaining work into up to 5 independent subtasks "
+            "that can run in parallel. Return ONLY a JSON array like:\n"
+            '[{"task":"description"},...]\n'
+            "No markdown fences, no explanation."
+        ),
+    )
+    temp_msgs = session.messages + [decompose_msg]
+
+    if not text_mode and not stream_json:
+        print_info("  ⇶ Auto-parallelizing: decomposing remaining work...")
+
+    raw_json = ""
+    try:
+        async with asyncio.timeout(60):
+            async for event in provider.stream(
+                messages=temp_msgs,
+                tools=[],
+                system=system_prompt,
+                max_tokens=4096,
+            ):
+                if event.type == "text":
+                    raw_json += event.text
+                elif event.type == "done":
+                    break
+                elif event.type == "error":
+                    return False
+    except Exception:
+        return False
+
+    # Parse JSON
+    try:
+        cleaned = raw_json.strip()
+        if "```" in cleaned:
+            cleaned = cleaned.split("```")[1].replace("json", "").strip()
+        subtasks = json_mod.loads(cleaned)
+        if not isinstance(subtasks, list):
+            subtasks = [subtasks]
+    except Exception:
+        return False
+
+    if len(subtasks) < 2:
+        return False
+
+    # Run parallel via coordinator
+    from ccb.coordinator import Coordinator
+
+    coord = Coordinator(max_agents=min(len(subtasks), 5))
+
+    if not text_mode and not stream_json:
+        print_info(f"  ⇶ Launching {len(subtasks)} parallel sub-agents")
+
+    async def _executor(task_text: str) -> str:
+        return await run_agent({"task": task_text}, registry, session.cwd)
+
+    agents = [
+        coord.create_agent(f"auto-{i+1}", prompt=st.get("task", str(st)) if isinstance(st, dict) else str(st))
+        for i, st in enumerate(subtasks)
+    ]
+    results = await coord.run_parallel(agents, _executor)
+
+    # Build merged result and inject into session
+    merged = "Auto-parallelization results:\n\n" + "\n\n".join(
+        f"### Subtask {i+1}: {agents[i].prompt}\n{r}"
+        for i, r in enumerate(results)
+    )
+
+    session.add_assistant_message(
+        f"Decomposed remaining work into {len(subtasks)} parallel subtasks."
+    )
+    session.add_user_message(merged)
+
+    if not text_mode and not stream_json:
+        print_info("  ⇶ Auto-parallelization complete. Resuming main agent...")
+
+    return True
