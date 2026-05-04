@@ -33,11 +33,12 @@ class Session:
         text: str,
         images: list[dict[str, Any]] | None = None,
         files: list[dict[str, Any]] | None = None,
+        media: list[dict[str, Any]] | None = None,
     ) -> None:
-        self.messages.append(Message(
-            role=Role.USER, content=text,
-            images=images or [], files=files or [],
-        ))
+        msg = Message(role=Role.USER, content=text, images=images or [], files=files or [])
+        if media:
+            msg.media = media
+        self.messages.append(msg)
         self.updated_at = time.time()
 
     def add_assistant_message(self, text: str, tool_calls: list[ToolCall] | None = None) -> None:

@@ -1242,11 +1242,12 @@ class REPLApp:
         text_after_at, at_files, at_images = resolve_all_mentions(text, self.cwd)
 
         # 2) Parse remaining input for image/file paths (drag-drop)
-        remaining_text, auto_images, auto_files = process_input_attachments(text_after_at)
+        remaining_text, auto_images, auto_files, auto_videos, auto_audios = process_input_attachments(text_after_at)
 
         # Merge all sources
         all_images = at_images + [img.to_dict() for img in auto_images]
         all_files = at_files + [fc.to_dict() for fc in auto_files]
+        all_media = [v.to_dict() for v in auto_videos] + [a.to_dict() for a in auto_audios]
         if self._pending_images:
             all_images.extend(self._pending_images)
             self._pending_images.clear()
@@ -1282,6 +1283,13 @@ class REPLApp:
             self._msg_lines.append(
                 ("class:msg-info", f"  📄 {len(all_files)} file(s): {names}\n")
             )
+        if all_media:
+            names = ", ".join(
+                md.get("filename", "media") for md in all_media
+            )
+            self._msg_lines.append(
+                ("class:msg-info", f"  🎬 {len(all_media)} media file(s): {names}\n")
+            )
         txt = display_text if display_text.endswith("\n") else display_text + "\n"
         bordered = _apply_left_border(
             [("class:msg-user", txt)], "class:msg-user-border"
@@ -1293,6 +1301,7 @@ class REPLApp:
             display_text,
             images=all_images if all_images else None,
             files=all_files if all_files else None,
+            media=all_media if all_media else None,
         )
         # Start cost turn timer so elapsed time shows from submission
         from ccb.cost_tracker import get_cost_state

@@ -1,12 +1,20 @@
 """OpenAI-compatible provider (GPT, Grok, local models, etc.)."""
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from typing import Any, AsyncIterator
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError, APIStatusError, APIConnectionError
 
 from ccb.api.base import Message, Provider, StreamEvent, ToolCall
+
+logger = logging.getLogger(__name__)
+
+_RETRYABLE_STATUS = {429, 500, 502, 503, 529}
+_MAX_RETRIES = 3
+_BASE_DELAY = 1.0
 
 
 def _is_reasoning_model(model: str) -> bool:
@@ -118,12 +126,39 @@ class OpenAIProvider(Provider):
                 pass
 
         # Some OpenAI-compatible APIs don't support stream_options;
-        # fall back without it on error.
-        try:
-            response = await self._client.chat.completions.create(**kwargs)
-        except Exception:
-            kwargs.pop("stream_options", None)
-            response = await self._client.chat.completions.create(**kwargs)
+        # fall back without it on error.  Also retry transient errors.
+        last_err: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                try:
+                    response = await self._client.chat.completions.create(**kwargs)
+                except Exception:
+                    kwargs.pop("stream_options", None)
+                    response = await self._client.chat.completions.create(**kwargs)
+                break  # success
+            except RateLimitError as e:
+                last_err = e
+                delay = _BASE_DELAY * (2 ** attempt)
+                logger.warning("Rate limited (attempt %d/%d), retrying in %.1fs", attempt + 1, _MAX_RETRIES, delay)
+                await asyncio.sleep(delay)
+            except APIStatusError as e:
+                if e.status_code in _RETRYABLE_STATUS:
+                    last_err = e
+                    delay = _BASE_DELAY * (2 ** attempt)
+                    logger.warning("Transient API error %d (attempt %d/%d), retrying in %.1fs",
+                                   e.status_code, attempt + 1, _MAX_RETRIES, delay)
+                    await asyncio.sleep(delay)
+                    continue
+                yield StreamEvent(type="error", error=f"OpenAI API error {e.status_code}: {e.message}")
+                return
+            except APIConnectionError as e:
+                last_err = e
+                delay = _BASE_DELAY * (2 ** attempt)
+                logger.warning("Connection error (attempt %d/%d), retrying in %.1fs", attempt + 1, _MAX_RETRIES, delay)
+                await asyncio.sleep(delay)
+        else:
+            yield StreamEvent(type="error", error=f"OpenAI API error after {_MAX_RETRIES} retries: {last_err}")
+            return
         async for chunk in response:
             # Usage arrives in the final chunk (empty choices) when
             # stream_options.include_usage is true.

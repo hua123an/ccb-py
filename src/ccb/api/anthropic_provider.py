@@ -1,11 +1,20 @@
 """Anthropic Claude provider with native streaming + tool_use."""
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any, AsyncIterator
 
 import anthropic
 
 from ccb.api.base import Message, Provider, StreamEvent, ToolCall
+
+logger = logging.getLogger(__name__)
+
+# Transient HTTP status codes worth retrying
+_RETRYABLE_STATUS = {429, 500, 502, 503, 529}
+_MAX_RETRIES = 3
+_BASE_DELAY = 1.0  # seconds
 
 
 class AnthropicProvider(Provider):
@@ -88,63 +97,95 @@ class AnthropicProvider(Provider):
         if prefill:
             yield StreamEvent(type="text", text=prefill)
 
-        async with self._client.messages.stream(**kwargs) as stream:
-            async for event in stream:
-                if event.type == "content_block_start":
-                    block = event.content_block
-                    if block.type == "tool_use":
-                        current_tool = {"id": block.id, "name": block.name}
-                        input_json_buf = ""
-                        yield StreamEvent(
-                            type="tool_use_start",
-                            tool_call=ToolCall(id=block.id, name=block.name, input={}),
-                        )
-                    elif block.type == "thinking":
-                        in_thinking = True
-                    elif block.type == "text":
-                        pass  # text deltas come in content_block_delta
+        # Retry loop for transient errors (429, 500, 502, 503, 529)
+        last_err: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                async with self._client.messages.stream(**kwargs) as stream:
+                    async for event in stream:
+                        if event.type == "content_block_start":
+                            block = event.content_block
+                            if block.type == "tool_use":
+                                current_tool = {"id": block.id, "name": block.name}
+                                input_json_buf = ""
+                                yield StreamEvent(
+                                    type="tool_use_start",
+                                    tool_call=ToolCall(id=block.id, name=block.name, input={}),
+                                )
+                            elif block.type == "thinking":
+                                in_thinking = True
+                            elif block.type == "text":
+                                pass  # text deltas come in content_block_delta
 
-                elif event.type == "content_block_delta":
-                    delta = event.delta
-                    if delta.type == "text_delta":
-                        yield StreamEvent(type="text", text=delta.text)
-                    elif delta.type == "thinking_delta":
-                        yield StreamEvent(type="thinking", text=delta.thinking)
-                    elif delta.type == "input_json_delta":
-                        input_json_buf += delta.partial_json
-                        yield StreamEvent(type="tool_use_input", text=delta.partial_json)
+                        elif event.type == "content_block_delta":
+                            delta = event.delta
+                            if delta.type == "text_delta":
+                                yield StreamEvent(type="text", text=delta.text)
+                            elif delta.type == "thinking_delta":
+                                yield StreamEvent(type="thinking", text=delta.thinking)
+                            elif delta.type == "input_json_delta":
+                                input_json_buf += delta.partial_json
+                                yield StreamEvent(type="tool_use_input", text=delta.partial_json)
 
-                elif event.type == "content_block_stop":
-                    if in_thinking:
-                        in_thinking = False
-                    elif current_tool:
-                        import json
-                        try:
-                            parsed_input = json.loads(input_json_buf) if input_json_buf else {}
-                        except json.JSONDecodeError:
-                            parsed_input = {}
-                        tc = ToolCall(
-                            id=current_tool["id"],
-                            name=current_tool["name"],
-                            input=parsed_input,
-                        )
-                        yield StreamEvent(type="tool_use_end", tool_call=tc)
-                        current_tool = None
-                        input_json_buf = ""
+                        elif event.type == "content_block_stop":
+                            if in_thinking:
+                                in_thinking = False
+                            elif current_tool:
+                                import json
+                                try:
+                                    parsed_input = json.loads(input_json_buf) if input_json_buf else {}
+                                except json.JSONDecodeError:
+                                    parsed_input = {}
+                                tc = ToolCall(
+                                    id=current_tool["id"],
+                                    name=current_tool["name"],
+                                    input=parsed_input,
+                                )
+                                yield StreamEvent(type="tool_use_end", tool_call=tc)
+                                current_tool = None
+                                input_json_buf = ""
 
-                elif event.type == "message_stop":
-                    pass
+                        elif event.type == "message_stop":
+                            pass
 
-            # Final message for usage
-            final = await stream.get_final_message()
-            yield StreamEvent(
-                type="done",
-                stop_reason=final.stop_reason,
-                usage={
-                    "input_tokens": final.usage.input_tokens,
-                    "output_tokens": final.usage.output_tokens,
-                },
-            )
+                    # Final message for usage
+                    final = await stream.get_final_message()
+                    yield StreamEvent(
+                        type="done",
+                        stop_reason=final.stop_reason,
+                        usage={
+                            "input_tokens": final.usage.input_tokens,
+                            "output_tokens": final.usage.output_tokens,
+                        },
+                    )
+                return  # success — exit retry loop
+
+            except anthropic.RateLimitError as e:
+                last_err = e
+                delay = _BASE_DELAY * (2 ** attempt)
+                logger.warning("Rate limited (attempt %d/%d), retrying in %.1fs", attempt + 1, _MAX_RETRIES, delay)
+                await asyncio.sleep(delay)
+                continue
+            except anthropic.APIStatusError as e:
+                if e.status_code in _RETRYABLE_STATUS:
+                    last_err = e
+                    delay = _BASE_DELAY * (2 ** attempt)
+                    logger.warning("Transient API error %d (attempt %d/%d), retrying in %.1fs",
+                                   e.status_code, attempt + 1, _MAX_RETRIES, delay)
+                    await asyncio.sleep(delay)
+                    continue
+                # Non-retryable — yield error and return
+                yield StreamEvent(type="error", error=f"Anthropic API error {e.status_code}: {e.message}")
+                return
+            except anthropic.APIConnectionError as e:
+                last_err = e
+                delay = _BASE_DELAY * (2 ** attempt)
+                logger.warning("Connection error (attempt %d/%d), retrying in %.1fs", attempt + 1, _MAX_RETRIES, delay)
+                await asyncio.sleep(delay)
+                continue
+
+        # All retries exhausted
+        yield StreamEvent(type="error", error=f"Anthropic API error after {_MAX_RETRIES} retries: {last_err}")
 
     @staticmethod
     def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

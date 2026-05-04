@@ -1,4 +1,4 @@
-"""Image and file upload utilities.
+"""Image, video, and file upload utilities.
 
 Supports:
 - Detecting image file paths in pasted/dragged text
@@ -6,6 +6,7 @@ Supports:
 - Reading images from macOS clipboard
 - Auto-resizing large images to stay under API limits (5 MB)
 - Extracting non-image file paths for inline content inclusion
+- Video/audio file detection and metadata extraction
 """
 from __future__ import annotations
 
@@ -21,6 +22,12 @@ from typing import Any
 # Supported image extensions (matching original claude-code)
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg"}
 
+# Supported video extensions
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv", ".m4v"}
+
+# Supported audio extensions
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma", ".opus"}
+
 # API size limit: Anthropic max is ~5 MB base64 (~3.75 MB raw)
 MAX_IMAGE_RAW_BYTES = 3_750_000  # 3.75 MB raw ≈ 5 MB base64
 
@@ -30,6 +37,12 @@ MAX_IMAGE_HEIGHT = 4320
 
 # Pattern for image file extensions
 IMAGE_EXTENSION_REGEX = re.compile(r"\.(png|jpe?g|gif|webp|bmp|tiff|svg)$", re.IGNORECASE)
+
+# Pattern for video extensions
+VIDEO_EXTENSION_REGEX = re.compile(r"\.(mp4|mov|avi|mkv|webm|flv|wmv|m4v)$", re.IGNORECASE)
+
+# Pattern for audio extensions
+AUDIO_EXTENSION_REGEX = re.compile(r"\.(mp3|wav|ogg|flac|aac|m4a|wma|opus)$", re.IGNORECASE)
 
 # Pattern for common file extensions (non-image, for file upload)
 TEXT_FILE_EXTENSIONS = {
@@ -93,6 +106,48 @@ class FileContent:
         )
 
 
+@dataclass
+class VideoContent:
+    """A video file attachment with metadata."""
+    filename: str
+    source_path: str
+    mime_type: str = "video/mp4"
+    size_bytes: int = 0
+    duration_seconds: float = 0.0
+    base64_data: str = ""  # Only populated if under size limit
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "filename": self.filename,
+            "source_path": self.source_path,
+            "mime_type": self.mime_type,
+            "size_bytes": self.size_bytes,
+            "duration_seconds": self.duration_seconds,
+        }
+
+
+@dataclass
+class AudioContent:
+    """An audio file attachment with metadata."""
+    filename: str
+    source_path: str
+    mime_type: str = "audio/mp3"
+    size_bytes: int = 0
+    duration_seconds: float = 0.0
+    base64_data: str = ""  # Only populated if under size limit
+    transcript: str = ""  # Auto-transcribed text if available
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "filename": self.filename,
+            "source_path": self.source_path,
+            "mime_type": self.mime_type,
+            "size_bytes": self.size_bytes,
+            "duration_seconds": self.duration_seconds,
+            "transcript": self.transcript,
+        }
+
+
 def _strip_quotes(text: str) -> str:
     """Remove outer quotes from a path string."""
     text = text.strip()
@@ -119,6 +174,25 @@ def is_image_path(text: str) -> bool:
     cleaned = _strip_quotes(text.strip())
     cleaned = _strip_backslash_escapes(cleaned)
     return bool(IMAGE_EXTENSION_REGEX.search(cleaned))
+
+
+def is_video_path(text: str) -> bool:
+    """Check if text represents a video file path."""
+    cleaned = _strip_quotes(text.strip())
+    cleaned = _strip_backslash_escapes(cleaned)
+    return bool(VIDEO_EXTENSION_REGEX.search(cleaned))
+
+
+def is_audio_path(text: str) -> bool:
+    """Check if text represents an audio file path."""
+    cleaned = _strip_quotes(text.strip())
+    cleaned = _strip_backslash_escapes(cleaned)
+    return bool(AUDIO_EXTENSION_REGEX.search(cleaned))
+
+
+def is_media_path(text: str) -> bool:
+    """Check if text represents any media file path (image/video/audio)."""
+    return is_image_path(text) or is_video_path(text) or is_audio_path(text)
 
 
 def is_text_file_path(text: str) -> bool:
@@ -337,14 +411,122 @@ def get_clipboard_image_macos() -> ImageContent | None:
             pass
 
 
-def extract_paths_from_input(text: str) -> tuple[str, list[str], list[str]]:
-    """Parse user input for file/image paths mixed with regular text.
+def read_video_from_path(path: str) -> VideoContent | None:
+    """Read a video file and return metadata.
+
+    Returns None if the file can't be read. Base64 data is only populated
+    for small files (<10MB) since video files are typically large.
+    """
+    p = Path(path).expanduser().resolve()
+    if not p.is_file():
+        return None
+
+    try:
+        size = p.stat().st_size
+    except OSError:
+        return None
+
+    ext = p.suffix.lower()
+    mime_map = {
+        ".mp4": "video/mp4", ".mov": "video/quicktime", ".avi": "video/x-msvideo",
+        ".mkv": "video/x-matroska", ".webm": "video/webm", ".flv": "video/x-flv",
+    }
+    mime_type = mime_map.get(ext, "video/mp4")
+
+    # Try to get duration via ffprobe
+    duration = 0.0
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "csv=p=0", str(p)],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            duration = float(result.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+        pass
+
+    # Only base64-encode small videos (<10MB)
+    b64 = ""
+    if size < 10_000_000:
+        try:
+            b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+        except (OSError, MemoryError):
+            pass
+
+    return VideoContent(
+        filename=p.name,
+        source_path=str(p),
+        mime_type=mime_type,
+        size_bytes=size,
+        duration_seconds=duration,
+        base64_data=b64,
+    )
+
+
+def read_audio_from_path(path: str) -> AudioContent | None:
+    """Read an audio file and return metadata.
+
+    Returns None if the file can't be read. Attempts auto-transcription
+    via whisper if available.
+    """
+    p = Path(path).expanduser().resolve()
+    if not p.is_file():
+        return None
+
+    try:
+        size = p.stat().st_size
+    except OSError:
+        return None
+
+    ext = p.suffix.lower()
+    mime_map = {
+        ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg",
+        ".flac": "audio/flac", ".aac": "audio/aac", ".m4a": "audio/mp4",
+        ".opus": "audio/opus",
+    }
+    mime_type = mime_map.get(ext, "audio/mpeg")
+
+    # Try to get duration via ffprobe
+    duration = 0.0
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "csv=p=0", str(p)],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            duration = float(result.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+        pass
+
+    # Base64 encode audio (usually smaller than video)
+    b64 = ""
+    if size < 25_000_000:  # 25MB limit for audio
+        try:
+            b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+        except (OSError, MemoryError):
+            pass
+
+    return AudioContent(
+        filename=p.name,
+        source_path=str(p),
+        mime_type=mime_type,
+        size_bytes=size,
+        duration_seconds=duration,
+        base64_data=b64,
+    )
+
+
+def extract_paths_from_input(text: str) -> tuple[str, list[str], list[str], list[str], list[str]]:
+    """Parse user input for file/image/media paths mixed with regular text.
 
     When a user drags files into the terminal or pastes paths, this function
-    separates image paths, text file paths, and remaining text.
+    separates image paths, video paths, audio paths, text file paths, and
+    remaining text.
 
     Returns:
-        (remaining_text, image_paths, file_paths)
+        (remaining_text, image_paths, file_paths, video_paths, audio_paths)
     """
     # Split on spaces preceding absolute paths (handles multi-file drag)
     # Unix: space + /    Windows: space + C:\
@@ -356,6 +538,8 @@ def extract_paths_from_input(text: str) -> tuple[str, list[str], list[str]]:
 
     image_paths: list[str] = []
     file_paths: list[str] = []
+    video_paths: list[str] = []
+    audio_paths: list[str] = []
     remaining: list[str] = []
 
     for line in lines:
@@ -364,33 +548,41 @@ def extract_paths_from_input(text: str) -> tuple[str, list[str], list[str]]:
             continue
         normalized = normalize_path(stripped)
 
-        if is_image_path(normalized) and (
-            os.path.isabs(normalized) or os.path.exists(normalized)
-        ):
+        is_abs = os.path.isabs(normalized) or os.path.exists(normalized)
+
+        if is_image_path(normalized) and is_abs:
             image_paths.append(normalized)
+        elif is_video_path(normalized) and is_abs:
+            video_paths.append(normalized)
+        elif is_audio_path(normalized) and is_abs:
+            audio_paths.append(normalized)
         elif is_text_file_path(normalized) and os.path.isabs(normalized):
             file_paths.append(normalized)
         else:
             remaining.append(stripped)
 
     remaining_text = " ".join(remaining).strip()
-    return remaining_text, image_paths, file_paths
+    return remaining_text, image_paths, file_paths, video_paths, audio_paths
 
 
 def process_input_attachments(
     text: str,
-) -> tuple[str, list[ImageContent], list[FileContent]]:
+) -> tuple[str, list[ImageContent], list[FileContent], list[VideoContent], list[AudioContent]]:
     """High-level function: parse input, read files, return attachments.
 
     Takes raw user input and returns:
       - Cleaned text (paths removed)
       - List of successfully loaded images
       - List of successfully loaded text files
+      - List of successfully loaded videos
+      - List of successfully loaded audio files
     """
-    remaining, image_paths, file_paths = extract_paths_from_input(text)
+    remaining, image_paths, file_paths, video_paths, audio_paths = extract_paths_from_input(text)
 
     images: list[ImageContent] = []
     files: list[FileContent] = []
+    videos: list[VideoContent] = []
+    audios: list[AudioContent] = []
 
     for ip in image_paths:
         img = read_image_from_path(ip)
@@ -402,4 +594,14 @@ def process_input_attachments(
         if fc:
             files.append(fc)
 
-    return remaining, images, files
+    for vp in video_paths:
+        vc = read_video_from_path(vp)
+        if vc:
+            videos.append(vc)
+
+    for ap in audio_paths:
+        ac = read_audio_from_path(ap)
+        if ac:
+            audios.append(ac)
+
+    return remaining, images, files, videos, audios

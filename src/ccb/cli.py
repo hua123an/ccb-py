@@ -289,9 +289,10 @@ async def _classic_repl(
         text_after_at, at_files, at_images = resolve_all_mentions(user_input, cwd)
         # 2) Detect image/file paths in remaining input (drag-drop)
         from ccb.images import process_input_attachments
-        remaining_text, auto_images, auto_files = process_input_attachments(text_after_at)
+        remaining_text, auto_images, auto_files, auto_videos, auto_audios = process_input_attachments(text_after_at)
         img_dicts = at_images + ([img.to_dict() for img in auto_images] if auto_images else [])
         file_dicts = at_files + ([fc.to_dict() for fc in auto_files] if auto_files else [])
+        media_dicts = [v.to_dict() for v in auto_videos] + [a.to_dict() for a in auto_audios]
         # Drain pending attachments from /image, /file commands
         if state.get("_pending_images"):
             img_dicts.extend(state.pop("_pending_images"))
@@ -310,11 +311,18 @@ async def _classic_repl(
         if auto_files:
             names = ", ".join(fc.filename for fc in auto_files)
             print_info(f"  📄 {len(auto_files)} file(s) attached: {names}")
+        if auto_videos:
+            names = ", ".join(v.filename for v in auto_videos)
+            print_info(f"  🎬 {len(auto_videos)} video(s) attached: {names}")
+        if auto_audios:
+            names = ", ".join(a.filename for a in auto_audios)
+            print_info(f"  🎵 {len(auto_audios)} audio(s) attached: {names}")
         print_user_message(display_text)
         session.add_user_message(
             display_text,
             images=img_dicts or None,
             files=file_dicts or None,
+            media=media_dicts or None,
         )
         cur_format = state.get("output_style", output_format)
         await run_turn(

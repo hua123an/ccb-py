@@ -37,6 +37,8 @@ class Message:
     images: list[dict[str, Any]] = field(default_factory=list)
     # File attachments (text content inlined in the prompt)
     files: list[dict[str, Any]] = field(default_factory=list)
+    # Video/audio attachments (metadata + optional base64 for small files)
+    media: list[dict[str, Any]] = field(default_factory=list)
 
     def to_anthropic(self) -> dict[str, Any]:
         if self.tool_results:
@@ -64,8 +66,8 @@ class Message:
                     "input": tc.input,
                 })
             return {"role": "assistant", "content": blocks}
-        # Multimodal: images + optional file content + text
-        if self.images or self.files:
+        # Multimodal: images + optional file content + video/audio + text
+        if self.images or self.files or self.media:
             blocks: list[dict] = []
             for img in self.images:
                 blocks.append({
@@ -83,6 +85,19 @@ class Message:
                     "type": "text",
                     "text": f"<file name=\"{fname}\">\n{fcontent}\n</file>",
                 })
+            for md in self.media:
+                fname = md.get("filename", "media")
+                mime = md.get("mime_type", "")
+                size = md.get("size_bytes", 0)
+                dur = md.get("duration_seconds", 0)
+                desc = f"[{mime}] {fname}"
+                if dur:
+                    desc += f" ({dur:.1f}s)"
+                if size:
+                    desc += f" [{size // 1024}KB]"
+                if md.get("base64_data"):
+                    desc += f"\n(base64 data available, {len(md['base64_data'])} chars)"
+                blocks.append({"type": "text", "text": f"<media>\n{desc}\n</media>"})
             if self.content:
                 blocks.append({"type": "text", "text": self.content})
             return {"role": self.role.value, "content": blocks}
@@ -121,15 +136,13 @@ class Message:
                 for tc in self.tool_calls
             ]
             return msg
-        # Multimodal: images + file content + text
-        if self.images or self.files:
+        # Multimodal: images + file content + video/audio + text
+        if self.images or self.files or self.media:
             parts: list[dict] = []
             for img in self.images:
                 mt = img.get("media_type", "image/png")
                 b64 = img["base64_data"]
                 if use_anthropic_images:
-                    # Anthropic-native format — sub2api relays pass this
-                    # straight through to the Anthropic API.
                     parts.append({
                         "type": "image",
                         "source": {
@@ -152,6 +165,19 @@ class Message:
                     "type": "text",
                     "text": f"<file name=\"{fname}\">\n{fcontent}\n</file>",
                 })
+            for md in self.media:
+                fname = md.get("filename", "media")
+                mime = md.get("mime_type", "")
+                size = md.get("size_bytes", 0)
+                dur = md.get("duration_seconds", 0)
+                desc = f"[{mime}] {fname}"
+                if dur:
+                    desc += f" ({dur:.1f}s)"
+                if size:
+                    desc += f" [{size // 1024}KB]"
+                if md.get("base64_data"):
+                    desc += f"\n(base64 data available, {len(md['base64_data'])} chars)"
+                parts.append({"type": "text", "text": f"<media>\n{desc}\n</media>"})
             if self.content:
                 parts.append({"type": "text", "text": self.content})
             return {"role": self.role.value, "content": parts}
