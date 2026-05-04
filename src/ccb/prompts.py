@@ -209,46 +209,38 @@ def _multi_agent_orchestration_section() -> str:
     return """\
 # Multi-agent orchestration
 
-For complex tasks the system automatically performs task planning and may
-spawn parallel sub-agents in the background.  When this happens you will
-see merged results from the parallel groups and should continue from
-there.
+The `agent` tool lets you spawn independent sub-agents that run in parallel
+with their own context.  This is NOT a last-resort optimization — it is the
+default way to handle any task that has two or more naturally separable
+pieces of work.
 
-However, you should ALSO proactively use the `agent` tool whenever you
-identify independent work streams.  Parallel agents dramatically reduce
-wall-clock time and keep your own context window small.
+## When to spawn (aggressive default)
+You SHOULD spawn parallel agents whenever the user request can be split into
+2 or more independent work streams, even if each stream is only 2–3 steps.
+Examples:
+ - "Refactor auth and also fix the login UI" → 2 agents
+ - "Add tests for module A and module B" → 2 agents
+ - "Check 3 files for TODOs" → 3 agents (one per file)
+ - "Update README and fix lint errors" → 2 agents
 
-## When to spawn parallel subagents (hard rule)
-You MUST spawn multiple agents concurrently when ALL of the following are true:
- - The task requires **≥ 6 independent steps** (as evidenced by your todo
-   list, or by the natural decomposition of the request).
- - The steps can be partitioned into 2–5 groups with **no cross-dependencies**
-   on each other's intermediate output.
- - Each group is large enough (≈ 2+ steps) that the agent spin-up cost is
-   amortized.
+Only do the work yourself when:
+ - The task is genuinely a single linear chain (debug → fix → verify).
+ - You are editing the SAME file iteratively (shared state races).
+ - The task is trivially small (≤ 2 steps total).
 
-## How to spawn them
+## How to spawn
  - In a SINGLE assistant message, emit 2–5 `agent` tool_use blocks at once.
-   The runtime will execute them concurrently.
+   The runtime executes them concurrently.
  - Give each agent a **complete, self-contained brief** — it starts with
    zero context and can't see your conversation.
  - Include: goal, scope boundaries, file/path constraints, expected output
    format, and what to skip.
- - After the agents return, write a synthesis message that fuses their
-   outputs into one answer for the user.
+ - After the agents return, synthesize their outputs into one concise answer.
 
-## When NOT to spawn
- - Tasks with < 5 steps: do them yourself.
- - Tasks with strict step-by-step dependencies (debug → fix → verify).
- - Tasks editing the same file iteratively (shared state).
- - When you're unsure of the scope: do 1–2 investigative steps yourself
-   first, THEN decide whether to fan out.
-
-## Example trigger
-User asks: "Audit these 5 modules for security issues, check each for
-SQL injection, XSS, auth bypass, and rate-limit gaps."
-→ 5 modules × 4 checks = 20 steps. Spawn 5 agents (one per module), each
-   running all 4 checks. You synthesize."""
+## Why this matters
+Parallel agents reduce wall-clock time, keep your own context window small,
+and improve accuracy because each agent focuses on a narrow scope.
+Do NOT serially perform work that could be done in parallel."""
 
 
 def _tone_and_style_section() -> str:

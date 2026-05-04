@@ -77,8 +77,9 @@ async def run_turn(
     if state.get("fast"):
         max_tokens = min(max_tokens, 4096)
 
-    # Token budget enforcement
+    # Token budget enforcement (supports both legacy int and new TaskBudget)
     token_budget = state.get("token_budget")
+    task_budget_obj = state.get("_task_budget")  # TaskBudget instance from agent_defs
 
     # Combine built-in + MCP tools
     all_tool_schemas = registry.all_schemas()
@@ -115,7 +116,7 @@ async def run_turn(
                     f"  📋 Planning: {total_steps} steps, complexity={complexity}"
                 )
             # If complex enough, auto-parallelize immediately using the plan
-            if total_steps >= 4 or complexity in ("medium", "high"):
+            if total_steps >= 3 or complexity in ("medium", "high"):
                 success = await _run_parallel_from_plan(
                     plan_result,
                     session,
@@ -127,8 +128,15 @@ async def run_turn(
                     stream_json,
                 )
                 if success:
-                    # After parallel execution, inject plan into context
                     pass  # _run_parallel_from_plan already injected assistant+user msgs
+            else:
+                if not text_mode and not stream_json:
+                    print_info(
+                        f"  📋 Plan: {total_steps} steps, complexity={complexity} — not parallelizing (threshold: >=3 steps or medium/high)"
+                    )
+
+    # One-shot prefill: consumed on round 0, then cleared
+    _prefill = state.pop("prefill", "") or ""
 
     for round_num in range(max_tool_rounds):
         # Budget check
@@ -136,6 +144,13 @@ async def run_turn(
             used = session.total_input_tokens + session.total_output_tokens
             if used >= token_budget:
                 print_info(f"Token budget reached ({used:,}/{token_budget:,}). Stopping.")
+                return
+
+        # TaskBudget check (richer budget object)
+        if task_budget_obj:
+            can_continue, reason = task_budget_obj.check()
+            if not can_continue:
+                print_info(f"Task budget exhausted: {reason}")
                 return
 
         # Auto-compact: trigger when the CURRENT conversation size (the most
@@ -146,15 +161,18 @@ async def run_turn(
         ctx_used = session.last_input_tokens
         if ctx_used > ctx_limit * 0.9 and len(session.messages) > 6:
             print_info(f"Context usage high ({ctx_used:,}/{ctx_limit:,}). Auto-compacting...")
-            from ccb.commands import _compact
+            from ccb.compaction import compact_session
             try:
-                await _compact(session, provider)
-                # Reset the snapshot: it's stale after compaction. The next
-                # response will repopulate it with the shrunken context size.
-                # This also prevents re-triggering on the very next round
-                # before a new response updates last_input_tokens.
+                removed = await compact_session(session, provider)
                 session.last_input_tokens = 0
-                print_info(f"Compacted to {len(session.messages)} messages.")
+                if removed:
+                    print_info(f"Compacted: removed {removed} messages, {len(session.messages)} remaining.")
+                else:
+                    # Fallback to legacy compaction
+                    from ccb.commands import _compact
+                    await _compact(session, provider)
+                    session.last_input_tokens = 0
+                    print_info(f"Compacted to {len(session.messages)} messages.")
             except Exception as e:
                 print_error(f"Auto-compact failed: {e}")
 
@@ -190,6 +208,7 @@ async def run_turn(
                     tools=all_tool_schemas,
                     system=system_prompt,
                     max_tokens=max_tokens,
+                    prefill=_prefill if round_num == 0 else "",
                 )
                 async with asyncio.timeout(180):
                     async for event in stream_coro:
@@ -199,7 +218,7 @@ async def run_turn(
                                 sys.stdout.write(event.text)
                                 sys.stdout.flush()
                             elif stream_json:
-                                _sj_line = json_mod.dumps({'type': 'content_block_delta', 'delta': {'text': event.text}})
+                                _sj_line = json_mod.dumps({'type': 'text_delta', 'delta': {'text': event.text}})
                                 sys.stdout.write(_sj_line + '\n')
                                 sys.stdout.flush()
                             elif printer:
@@ -217,13 +236,20 @@ async def run_turn(
                                 sys.stdout.write(_sj_line + '\n')
                                 sys.stdout.flush()
 
+                        elif event.type == "tool_use_start":
+                            if stream_json and event.tool_call:
+                                tc = event.tool_call
+                                _sj_line = json_mod.dumps({'type': 'tool_use_start', 'id': tc.id, 'name': tc.name})
+                                sys.stdout.write(_sj_line + '\n')
+                                sys.stdout.flush()
+
                         elif event.type == "tool_use_end":
                             if event.tool_call:
                                 tool_calls.append(event.tool_call)
 
                             if stream_json and event.tool_call:
                                 tc = event.tool_call
-                                _sj_line = json_mod.dumps({'type': 'tool_use', 'id': tc.id, 'name': tc.name, 'input': tc.input})
+                                _sj_line = json_mod.dumps({'type': 'tool_use_end', 'id': tc.id, 'name': tc.name, 'input': tc.input})
                                 sys.stdout.write(_sj_line + '\n')
                                 sys.stdout.flush()
 
@@ -287,6 +313,8 @@ async def run_turn(
         session.add_assistant_message(text_buf, tool_calls if tool_calls else None)
         session.add_usage(usage)
         cost.add_usage(usage)
+        if task_budget_obj:
+            task_budget_obj.add_usage(usage)
 
         # No tool calls → turn is done; end cost timer before printing
         if not tool_calls:
@@ -307,14 +335,13 @@ async def run_turn(
             return
         session.add_tool_results(results)
 
-        # Auto-parallelize after 10 sequential tool rounds
-        if round_num == 10:
+        # Auto-parallelize after 4 sequential tool rounds (original was 10 — too late)
+        if round_num >= 4:
             success = await _try_auto_parallelize(
                 session, provider, registry, system_prompt, max_tokens,
                 text_mode, stream_json,
             )
             if success:
-                # Parallel results injected into session; next round sees merged output
                 pass
 
         # Emit tool results for stream-json mode
@@ -366,12 +393,33 @@ async def execute_tool_calls(
                     run_agent(tc.input, registry, cwd)
                 )
 
+    # Load MCP approval manager
+    from ccb.mcp_approval import ApprovalMode, get_approval_manager
+    approval_mgr = get_approval_manager()
+
     for tc in tool_calls:
         # Check if this is an MCP tool
         if mcp_manager:
             mcp_parsed = mcp_manager.parse_mcp_tool_name(tc.name)
             if mcp_parsed:
                 server_name, tool_name = mcp_parsed
+                # MCP approval check
+                mode, reason = approval_mgr.check_approval(tool_name, server_name, tc.input)
+                if mode == ApprovalMode.DENY:
+                    results.append(APIToolResult(
+                        tool_use_id=tc.id,
+                        content=f"Denied by approval policy: {reason}",
+                        is_error=True,
+                    ))
+                    continue
+                if mode == ApprovalMode.ASK:
+                    approved = await ask_permission(f"mcp:{server_name}/{tool_name}", tc.input)
+                    if not approved:
+                        approval_mgr.record_approval(tool_name, server_name, approved=False)
+                        results.append(APIToolResult(tool_use_id=tc.id, content="User denied permission", is_error=True))
+                        continue
+                    approval_mgr.record_approval(tool_name, server_name, approved=True)
+
                 print_tool_call(f"mcp:{server_name}/{tool_name}", tc.input)
                 try:
                     output = await mcp_manager.call_tool(server_name, tool_name, tc.input)
@@ -525,6 +573,16 @@ async def run_agent(
 
     task = input_data.get("task", "")
 
+    # Run input guardrails before execution
+    from ccb.guardrails import get_guardrails
+    guardrails = get_guardrails()
+    violations = guardrails.check_input(task)
+    if violations:
+        block_msgs = [v.message for v in violations if v.severity == "block"]
+        if block_msgs:
+            agent_complete(label, f"Guardrail blocked: {'; '.join(block_msgs)}")
+            return f"[Guardrail blocked] {'; '.join(block_msgs)}"
+
     # Mark this task's context tree as "inside agent". Because contextvars
     # propagate through asyncio.create_task and await, every tool call
     # dispatched below this point (no matter how deep) will see the flag.
@@ -561,13 +619,21 @@ async def run_agent(
             max_tool_rounds=80,
         )
 
+        result_text = "(Agent completed without text output)"
         for msg in reversed(agent_session.messages):
             if msg.role == Role.ASSISTANT and msg.content:
-                agent_complete(label, msg.content)
-                return msg.content
+                result_text = msg.content
+                break
 
-        agent_complete(label, "")
-        return "(Agent completed without text output)"
+        # Run output guardrails
+        out_violations = guardrails.check_output(result_text)
+        if out_violations:
+            warn_msgs = [v.message for v in out_violations if v.severity == "warn"]
+            if warn_msgs:
+                result_text += f"\n\n[Guardrail warnings: {'; '.join(warn_msgs)}]"
+
+        agent_complete(label, result_text)
+        return result_text
     except Exception as e:
         agent_complete(label, f"error: {e}")
         raise
@@ -590,7 +656,7 @@ async def _try_auto_parallelize(
     text_mode: bool,
     stream_json: bool,
 ) -> bool:
-    """After 10 sequential tool rounds, auto-decompose into parallel sub-agents.
+    """After 4 sequential tool rounds, auto-decompose into parallel sub-agents.
 
     Returns True if parallelization was performed.
     """
@@ -598,7 +664,7 @@ async def _try_auto_parallelize(
     decompose_msg = Message(
         role=Role.USER,
         content=(
-            "This complex task has already run 10 tool rounds. "
+            "This complex task has already run 4 tool rounds. "
             "Decompose the remaining work into up to 5 independent subtasks "
             "that can run in parallel. Return ONLY a JSON array like:\n"
             '[{"task":"description"},...]\n'
@@ -637,15 +703,19 @@ async def _try_auto_parallelize(
         if not isinstance(subtasks, list):
             subtasks = [subtasks]
     except Exception:
+        if not text_mode and not stream_json:
+            print_info("  📋 Auto-parallelize: JSON parse failed, skipping")
         return False
 
     if len(subtasks) < 2:
+        if not text_mode and not stream_json:
+            print_info(f"  📋 Auto-parallelize: only {len(subtasks)} subtask(s), need >=2")
         return False
 
     # Run parallel via coordinator
     from ccb.coordinator import Coordinator
 
-    coord = Coordinator(max_agents=min(len(subtasks), 5))
+    coord = Coordinator(max_agents=len(subtasks))
 
     if not text_mode and not stream_json:
         print_info(f"  ⇶ Launching {len(subtasks)} parallel sub-agents")
@@ -695,21 +765,21 @@ async def _run_task_planning(
     planning_msg = Message(
         role=Role.USER,
         content=(
-            "你是任务规划专家。请把上面的用户请求拆解成尽可能细小的、原子化的可执行步骤。\n\n"
-            "每个步骤必须是单一操作，例如：\n"
-            '- "读取文件 /path/to/file.py"\n'
-            '- "修改第 12 行的函数名 foo 为 bar"\n'
-            '- "运行测试 test_foo.py"\n'
-            '- "搜索代码中的 TODO 标记"\n'
-            '- "检查变量 bar 的所有引用"\n\n'
-            "拆分的原则是：每个步骤只做一个动作，绝不合并多个动作。"
-            "步骤越细，完成度和准确度越高。宁可多拆几步，也不要把多个操作塞进一个步骤。\n\n"
-            "评估复杂度：\n"
-            "- low: <= 3 步，单文件修改\n"
-            "- medium: 4-7 步，跨文件修改但逻辑简单\n"
-            "- high: >= 8 步，或涉及架构设计、多模块重构\n\n"
-            "返回严格的 JSON 格式（不要 markdown 代码块）：\n"
-            '{"complexity":"low|medium|high","total_steps":数字,"steps":["步骤1","步骤2",...]}'
+            "You are a task planning expert. Decompose the user's request above into the smallest possible atomic executable steps.\n\n"
+            "Each step must be a single operation, for example:\n"
+            '- "Read file /path/to/file.py"\n'
+            '- "Change function name foo to bar on line 12"\n'
+            '- "Run test test_foo.py"\n'
+            '- "Search for TODO markers in code"\n'
+            '- "Check all references to variable bar"\n\n'
+            "Principle: each step does one thing only. Never combine multiple operations into one step."
+            "Finer steps mean higher completion and accuracy. Prefer more small steps over fewer combined ones.\n\n"
+            "Complexity levels:\n"
+            "- low: <= 3 steps, single file changes\n"
+            "- medium: 4-7 steps, cross-file changes but simple logic\n"
+            "- high: >= 8 steps, or involves architecture design, multi-module refactoring\n\n"
+            "Return strict JSON format (no markdown code blocks):\n"
+            '{"complexity":"low|medium|high","total_steps":N,"steps":["step 1","step 2",...]}'
         ),
     )
 
@@ -782,13 +852,11 @@ async def _run_parallel_from_plan(
             groups.append(list(range(i, min(i + group_size, len(steps)))))
 
     if not text_mode and not stream_json:
-        print_info(
-            f"  ⇶ Auto-parallelizing {len(steps)} steps into {len(groups)} groups"
-        )
+        print_info(f"  ⇶ Auto-parallelizing {len(steps)} steps into {len(groups)} group(s)")
 
     from ccb.coordinator import Coordinator
 
-    coord = Coordinator(max_agents=min(len(groups), 5))
+    coord = Coordinator(max_agents=len(groups))
 
     async def _executor(task_text: str) -> str:
         return await run_agent({"task": task_text}, registry, session.cwd)
@@ -807,6 +875,8 @@ async def _run_parallel_from_plan(
         agents.append(agent)
 
     if len(agents) < 2:
+        if not text_mode and not stream_json:
+            print_info(f"  📋 Plan parallelization: only {len(agents)} agent(s) after grouping, need >=2")
         return False
 
     results = await coord.run_parallel(agents, _executor)

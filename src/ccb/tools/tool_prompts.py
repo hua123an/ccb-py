@@ -334,3 +334,34 @@ Ensure your plan is complete and unambiguous:
 - Once your plan is finalized, use THIS tool to request approval
 
 **Important:** Do NOT use ask_user_question to ask "Is this plan okay?" or "Should I proceed?" — that's exactly what THIS tool does."""
+
+
+# ---------------------------------------------------------------------------
+# CodeInterpreter
+# ---------------------------------------------------------------------------
+CODE_INTERPRETER_PROMPT = """\
+Execute Python code in a sandboxed environment and return the output.
+
+Usage:
+- Write complete, self-contained Python code
+- stdout and stderr are captured and returned
+- The code runs in an isolated subprocess with resource limits
+- Available libraries: standard library + common scientific packages (numpy, pandas, matplotlib if installed)
+- For matplotlib, use `plt.savefig('/tmp/plot.png')` to save plots, then read the file
+- Timeout: 60 seconds per execution
+- Memory limit: 512MB
+- No network access in sandboxed mode"""
+
+
+# ---------------------------------------------------------------------------
+# ImageGeneration
+# ---------------------------------------------------------------------------
+IMAGE_GEN_PROMPT = """\
+Generate images using AI image generation APIs.
+
+Usage:
+- Provide a text description (prompt) of the image to generate
+- Images are saved to the specified output directory (default: current working directory)
+- Supports DALL-E 3 (via OpenAI API) and other compatible endpoints
+- Returns the saved file path and generation details
+- Requires OPENAI_API_KEY or compatible API key"""

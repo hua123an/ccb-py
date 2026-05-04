@@ -81,6 +81,8 @@ def create_default_registry(cwd: str) -> ToolRegistry:
     from ccb.tools.task import TaskStopTool, TaskOutputTool
     from ccb.tools.mcp_resource import ListMcpResourcesTool, ReadMcpResourceTool
     from ccb.tools.plan import EnterPlanModeTool, ExitPlanModeTool
+    from ccb.tools.code_interpreter import CodeInterpreterTool
+    from ccb.tools.image_gen import ImageGenerationTool
 
     registry = ToolRegistry()
     for tool in [
@@ -93,6 +95,8 @@ def create_default_registry(cwd: str) -> ToolRegistry:
         AgentTool(),
         WebFetchTool(),
         WebSearchTool(),
+        CodeInterpreterTool(),
+        ImageGenerationTool(),
         TodoWriteTool(),
         NotebookEditTool(),
         AskUserQuestionTool(),

@@ -47,8 +47,11 @@ class AnthropicProvider(Provider):
         tools: list[dict[str, Any]],
         system: str = "",
         max_tokens: int = 16384,
+        prefill: str = "",
     ) -> AsyncIterator[StreamEvent]:
         api_messages = [m.to_anthropic() for m in messages]
+        if prefill:
+            api_messages.append({"role": "assistant", "content": prefill})
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": api_messages,
@@ -78,6 +81,12 @@ class AnthropicProvider(Provider):
         current_tool: dict[str, Any] | None = None
         input_json_buf = ""
         in_thinking = False
+
+        # Echo prefill back so the caller's text_buf starts with the prefix.
+        # The Anthropic API continues generation from the prefill without
+        # re-emitting it, so we must yield it ourselves.
+        if prefill:
+            yield StreamEvent(type="text", text=prefill)
 
         async with self._client.messages.stream(**kwargs) as stream:
             async for event in stream:

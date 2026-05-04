@@ -9,6 +9,7 @@ and other settings, inspired by claude-agent-sdk's AgentDefinition.
 """
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -170,3 +171,60 @@ def apply_agent(agent: AgentDef, provider: Any, state: dict[str, Any]) -> str:
 
     state["_active_agent"] = agent.name
     return agent.prompt
+
+
+class AgentRegistry:
+    """Registry of agent definitions with save/load support."""
+
+    def __init__(self) -> None:
+        self._agents: dict[str, AgentDef] = {}
+        self._load_builtins()
+
+    def _load_builtins(self) -> None:
+        """Load built-in agent definitions."""
+        for agent in discover_agents():
+            self._agents[agent.name] = agent
+
+    def register(self, agent: AgentDef) -> None:
+        self._agents[agent.name] = agent
+
+    def get(self, name: str) -> AgentDef | None:
+        return self._agents.get(name)
+
+    def remove(self, name: str) -> bool:
+        return self._agents.pop(name, None) is not None
+
+    def list_agents(self) -> list[AgentDef]:
+        return sorted(self._agents.values(), key=lambda a: a.name)
+
+    def save(self, path: Path | None = None) -> None:
+        """Save custom agent definitions to disk."""
+        p = path or (Path.home() / ".claude" / "custom_agents.json")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        # Only save non-builtin agents (those with a source file or custom)
+        custom = [a.to_dict() for a in self._agents.values() if a.source or not a.name in ("coder", "reviewer", "planner")]
+        p.write_text(json.dumps(custom, indent=2, ensure_ascii=False))
+
+    def load(self, path: Path | None = None) -> None:
+        """Load custom agent definitions from disk."""
+        p = path or (Path.home() / ".claude" / "custom_agents.json")
+        if not p.exists():
+            return
+        try:
+            data = json.loads(p.read_text())
+            for item in data:
+                agent = AgentDef(**{k: v for k, v in item.items() if k in AgentDef.__dataclass_fields__})
+                self._agents[agent.name] = agent
+        except (json.JSONDecodeError, OSError, KeyError):
+            pass
+
+
+# Module singleton
+_registry: AgentRegistry | None = None
+
+
+def get_agent_registry() -> AgentRegistry:
+    global _registry
+    if _registry is None:
+        _registry = AgentRegistry()
+    return _registry

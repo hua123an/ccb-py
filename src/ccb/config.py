@@ -194,12 +194,28 @@ def get_base_url() -> str | None:
 
 
 def get_provider() -> str:
-    """Determine provider: anthropic or openai."""
+    """Determine provider: anthropic, openai, bedrock, or vertex.
+
+    Priority:
+    1. Active account provider config (highest - user explicitly configured)
+    2. Environment variables (AWS_*, GOOGLE_*, OPENAI_*)
+    3. Model name heuristics
+    4. Default to anthropic
+    """
+    # First check account config - user explicitly chose this provider
     acct = get_active_account()
-    if acct:
-        return acct.get("provider", "openai")
+    if acct and acct.get("provider"):
+        return acct.get("provider", "anthropic")
+
+    # Environment variables as fallback
+    if os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.get("AWS_PROFILE"):
+        return "bedrock"
+    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        return "vertex"
     if os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_BASE_URL"):
         return "openai"
+
+    # Model name heuristics
     model = get_model()
     if model.startswith(("gpt-", "o1-", "o3-", "o4-")):
         return "openai"

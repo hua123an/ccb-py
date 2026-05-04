@@ -128,6 +128,10 @@ class Session:
             "messages": [self._msg_to_dict(m) for m in self.messages],
         }
 
+    def to_dict(self) -> dict[str, Any]:
+        """Public alias for external callers (e.g. /teleport)."""
+        return self._to_dict()
+
     @classmethod
     def _from_dict(cls, data: dict[str, Any]) -> Session:
         s = cls(

@@ -179,8 +179,17 @@ class Provider(ABC):
         tools: list[dict[str, Any]],
         system: str = "",
         max_tokens: int = 16384,
+        prefill: str = "",
     ) -> AsyncIterator[StreamEvent]:
-        """Stream a response, yielding StreamEvents."""
+        """Stream a response, yielding StreamEvents.
+
+        Args:
+            prefill: Optional text to pre-fill the assistant turn.
+                     The model will continue from this prefix.
+                     Only natively supported by Anthropic; for OpenAI-compatible
+                     relays running Claude it is injected as a trailing assistant
+                     message and the prefix is echoed back as the first text event.
+        """
         ...
 
     @abstractmethod

@@ -763,6 +763,26 @@ async def handle_command(
             )
         return True
 
+    # ── Prefill ──
+    if command == "/prefill":
+        if args:
+            state["prefill"] = args
+            print_info(f"Prefill set: \"{args}\"  (will be used for the next message, then cleared)")
+        else:
+            current = state.get("prefill", "")
+            if current:
+                state.pop("prefill", None)
+                print_info("Prefill cleared.")
+            else:
+                print_info(
+                    "Usage: /prefill <text>\n"
+                    "  The model will start its next reply with <text> and continue from there.\n"
+                    "  Anthropic protocol: natively supported.\n"
+                    "  OpenAI protocol: injected as trailing assistant message (effective on Claude relays).\n"
+                    "  Run /prefill again with no argument to clear."
+                )
+        return True
+
     # ── Fast ──
     if command == "/fast":
         state["fast"] = not state.get("fast", False)
@@ -2143,6 +2163,7 @@ def _print_help() -> None:
         ("/agents [name]", "List/activate agent definitions"),
         ("/fork", "Fork current session"),
         # ── UI / Preferences ──
+        ("/prefill [text]", "Pre-fill model's next reply with text; empty to clear"),
         ("/thinking [on|off|adaptive]", "Toggle/set thinking mode"),
         ("/theme [name]", "Change color theme"),
         ("/color [name]", "Set prompt bar color"),
@@ -2906,18 +2927,35 @@ async def _account_add(provider: Provider, session: Session) -> Provider | None:
     base_url = await ask_text(
         "Base URL (full URL up to /v1, e.g. https://api.example.com/v1)",
         placeholder="https://api.example.com/v1",
-        title="Add Account — Step 2/4",
+        title="Add Account — Step 2/5",
     )
     if not base_url or not (base_url := base_url.strip().rstrip("/")):
         print_info("Cancelled.")
         return None
+
+    # ── Step 2.5: provider type ──────────────────────────────────────
+    provider_options = [
+        {"label": "OpenAI / OpenAI-compatible", "description": "Most relays (openrouter, huaan.space, etc.)"},
+        {"label": "Anthropic (native)", "description": "api.anthropic.com or compatible endpoints"},
+        {"label": "Google Gemini", "description": "Google's Gemini API"},
+        {"label": "AWS Bedrock", "description": "Amazon Bedrock (uses AWS credentials)"},
+        {"label": "Google Vertex", "description": "Google Cloud Vertex AI"},
+    ]
+    provider_idx = await select_one(
+        provider_options,
+        title="Select Protocol Type",
+    )
+    if provider_idx is None:
+        print_info("Cancelled.")
+        return None
+    provider_type = ["openai", "anthropic", "gemini", "bedrock", "vertex"][provider_idx]
 
     # ── Step 3: API key (masked) ─────────────────────────────────────
     api_key = await ask_text(
         "API key (will be stored in ~/.claude/accounts.json)",
         placeholder="sk-...",
         mask=True,
-        title="Add Account — Step 3/4",
+        title="Add Account — Step 3/5",
     )
     if not api_key or not (api_key := api_key.strip()):
         print_info("Cancelled.")
@@ -2969,11 +3007,8 @@ async def _account_add(provider: Provider, session: Session) -> Provider | None:
         return None
 
     # ── Save ────────────────────────────────────────────────────────
-    # Detect provider type. Default to "openai" — the router auto-routes
-    # Claude models to AnthropicProvider regardless, so openai gives max
-    # flexibility for mixed-model relays (openrouter, b.ai, etc.).
     profile = {
-        "provider": "openai",
+        "provider": provider_type,
         "apiKey": api_key,
         "baseUrl": base_url,
         "models": models,

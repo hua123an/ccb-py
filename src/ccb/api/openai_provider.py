@@ -66,8 +66,13 @@ class OpenAIProvider(Provider):
         tools: list[dict[str, Any]],
         system: str = "",
         max_tokens: int = 16384,
+        prefill: str = "",
     ) -> AsyncIterator[StreamEvent]:
         api_messages = self._build_messages(messages, system)
+        if prefill:
+            # Inject trailing assistant message so the model continues from prefix.
+            # Only effective on Claude-compatible relays; standard OpenAI ignores it.
+            api_messages.append({"role": "assistant", "content": prefill})
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": api_messages,
@@ -87,6 +92,10 @@ class OpenAIProvider(Provider):
         tool_calls_buf: dict[int, dict[str, Any]] = {}
         total_usage = {"input_tokens": 0, "output_tokens": 0}
         finish_reason: str | None = None
+
+        # Echo prefill so text_buf starts with the prefix
+        if prefill:
+            yield StreamEvent(type="text", text=prefill)
 
         # Debug log: record exact model + base_url actually sent. Useful when
         # a relay (e.g. huaan.space, b.ai) mislabels the backing model in the
