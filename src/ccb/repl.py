@@ -1153,7 +1153,11 @@ class REPLApp:
         else:
             self._current_task = asyncio.ensure_future(self._handle_user_message(text))
 
-    # Commands whose output should open in the full-screen pager
+    # Commands whose output should open in the full-screen pager.
+    # IMPORTANT: Only include commands that produce PURE TEXT output.
+    # Commands that use interactive UI (select_one, ask_text, tools requiring
+    # permission) must NOT be listed here, as capture mode would intercept
+    # their interactive dialogs.
     _PAGER_COMMANDS = frozenset({
         "/help", "/diff", "/doctor", "/status", "/flags", "/peers",
         "/pipes", "/effort", "/langfuse", "/sentry", "/acp",
