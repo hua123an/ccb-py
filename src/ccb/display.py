@@ -6,6 +6,7 @@ for an active REPL and delegates accordingly.
 """
 from __future__ import annotations
 
+import shutil
 import sys
 from io import StringIO
 from typing import Any
@@ -174,6 +175,7 @@ class _REPLConsole:
         return lines
 
     def print(self, *args: Any, **kwargs: Any) -> None:
+        _sync_console_width()
         # Capture mode: buffer everything, regardless of REPL state
         if self._capturing:
             _plain_buf.truncate(0)
@@ -232,6 +234,14 @@ _plain_console = Console(
 )
 
 
+def _sync_console_width() -> None:
+    """Update capture consoles to match actual terminal width."""
+    w = shutil.get_terminal_size().columns
+    if w > 20:
+        _plain_console.width = w
+        _capture_console.width = w
+
+
 def _get_repl():
     """Get the active REPL, if any."""
     from ccb.repl import get_active_repl
@@ -248,6 +258,7 @@ def _rich_capture(renderable: Any) -> str:
 
 def _out(text: str = "", style: str = "", *, rich_obj: Any = None) -> None:
     """Output text, routing to REPL buffer or console as appropriate."""
+    _sync_console_width()
     # Capture mode: buffer for pager regardless of REPL state
     if repl_console._capturing:
         if rich_obj is not None:
