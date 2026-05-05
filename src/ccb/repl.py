@@ -351,6 +351,10 @@ class REPLApp:
 
     def append_output(self, text: str, style: str = "") -> None:
         """Append plain text to the message area."""
+        from ccb.display import repl_console
+        if repl_console._capturing:
+            repl_console._capture_lines.append((style, text))
+            return
         self._msg_lines.append((style, text))
         self._scroll_back = 0  # snap to bottom on new output
         self._invalidate()
