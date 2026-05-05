@@ -174,6 +174,22 @@ class _REPLConsole:
         return lines
 
     def print(self, *args: Any, **kwargs: Any) -> None:
+        # Capture mode: buffer everything, regardless of REPL state
+        if self._capturing:
+            _plain_buf.truncate(0)
+            _plain_buf.seek(0)
+            kwargs.pop("style", None)
+            kwargs.pop("highlight", None)
+            try:
+                _plain_console.print(*args, **kwargs)
+            except Exception:
+                text = " ".join(str(a) for a in args)
+                _plain_buf.write(text + "\n")
+            text = _plain_buf.getvalue()
+            if text:
+                self._capture_lines.append(("", text))
+            return
+
         repl = _get_repl()
         if repl:
             _plain_buf.truncate(0)
@@ -189,10 +205,7 @@ class _REPLConsole:
                 _plain_buf.write(text + "\n")
             text = _plain_buf.getvalue()
             if text:
-                if self._capturing:
-                    self._capture_lines.append(("", text))
-                else:
-                    repl.append_output(text, "class:msg-info")
+                repl.append_output(text, "class:msg-info")
         else:
             console.print(*args, **kwargs)
 
@@ -235,18 +248,19 @@ def _rich_capture(renderable: Any) -> str:
 
 def _out(text: str = "", style: str = "", *, rich_obj: Any = None) -> None:
     """Output text, routing to REPL buffer or console as appropriate."""
+    # Capture mode: buffer for pager regardless of REPL state
+    if repl_console._capturing:
+        if rich_obj is not None:
+            _plain_buf.truncate(0)
+            _plain_buf.seek(0)
+            _plain_console.print(rich_obj)
+            text = _plain_buf.getvalue()
+        if text:
+            repl_console._capture_lines.append(("", text))
+        return
+
     repl = _get_repl()
     if repl:
-        # Capture mode: buffer for pager instead of sending to REPL
-        if repl_console._capturing:
-            if rich_obj is not None:
-                _plain_buf.truncate(0)
-                _plain_buf.seek(0)
-                _plain_console.print(rich_obj)
-                text = _plain_buf.getvalue()
-            if text:
-                repl_console._capture_lines.append(("", text))
-            return
         if rich_obj is not None:
             ansi = _rich_capture(rich_obj)
             repl.append_ansi(ansi)
