@@ -1149,6 +1149,12 @@ class REPLApp:
         else:
             self._current_task = asyncio.ensure_future(self._handle_user_message(text))
 
+    # Commands whose output should open in the full-screen pager
+    _PAGER_COMMANDS = frozenset({
+        "/help", "/diff", "/doctor", "/status", "/flags", "/peers",
+        "/pipes", "/effort", "/langfuse", "/sentry", "/acp",
+    })
+
     async def _handle_slash(self, text: str) -> None:
         """Handle a slash command."""
         try:
@@ -1160,23 +1166,39 @@ class REPLApp:
                 self.clear_messages()
                 return
 
+            # /help: build content directly and show in pager
             if text == "/help":
-                self._show_help()
+                help_lines = self._build_help_lines()
+                from ccb.pager import show_pager
+                await show_pager(help_lines, title="/help", _repl_app=self.app)
                 return
 
             # Remember message count before command to detect /resume
             msg_count_before = len(self.session.messages)
 
+            # Determine if this command should use the pager
+            cmd_word = text.strip().split()[0].lower()
+            use_pager = cmd_word in self._PAGER_COMMANDS
+
             from ccb.commands import handle_command
+            from ccb.display import repl_console
+
+            if use_pager:
+                repl_console.start_capture()
+
             try:
                 result = await handle_command(
                     text, self.session, self.provider, self.registry, self.cwd,
                     mcp_manager=self.mcp_manager, state=self.state,
                 )
             except asyncio.CancelledError:
+                if use_pager:
+                    repl_console.stop_capture()
                 self.append_output("  Cancelled.\n", "class:dim")
                 return
             except Exception as e:
+                if use_pager:
+                    repl_console.stop_capture()
                 # Write full traceback to debug log so nested-app / layout
                 # issues don't get lost behind a single-line error.
                 import traceback
@@ -1195,6 +1217,14 @@ class REPLApp:
                     "class:msg-error",
                 )
                 return
+
+            # Show captured output in the full-screen pager
+            if use_pager:
+                captured = repl_console.stop_capture()
+                if captured:
+                    from ccb.pager import show_pager
+                    await show_pager(captured, title=cmd_word, _repl_app=self.app)
+
         finally:
             self._is_busy = False
             self._is_loading = False
@@ -1205,7 +1235,6 @@ class REPLApp:
             self.provider = self.state.pop("_new_provider")
 
         # If a resume-type command loaded messages, replay conversation history
-        cmd_word = text.strip().split()[0].lower()
         if cmd_word in ("/resume", "/continue", "/sessions"):
             if len(self.session.messages) > 0 and len(self.session.messages) != msg_count_before:
                 self._replay_session_history()
@@ -1421,6 +1450,37 @@ class REPLApp:
         self._msg_lines.append(("", "\n"))
         self._scroll_back = 0  # snap to bottom to show latest
         self._invalidate()
+
+    @staticmethod
+    def _build_help_lines() -> list[tuple[str, str]]:
+        """Build help content as (style, text) tuples for the pager."""
+        return [
+            ("class:pager-heading", "  Commands\n"),
+            ("class:pager-cmd", "  /model          "), ("", "Switch or view model\n"),
+            ("class:pager-cmd", "  /account        "), ("", "Switch account + model\n"),
+            ("class:pager-cmd", "  /sessions       "), ("", "List / resume sessions\n"),
+            ("class:pager-cmd", "  /compact        "), ("", "Compact conversation\n"),
+            ("class:pager-cmd", "  /effort         "), ("", "Set effort level\n"),
+            ("class:pager-cmd", "  /permissions    "), ("", "Permission mode\n"),
+            ("class:pager-cmd", "  /diff           "), ("", "Git diff\n"),
+            ("class:pager-cmd", "  /doctor         "), ("", "Run diagnostics\n"),
+            ("class:pager-cmd", "  /status         "), ("", "Show status\n"),
+            ("class:pager-cmd", "  /flags          "), ("", "Feature flags\n"),
+            ("class:pager-cmd", "  /peers          "), ("", "LAN peer discovery\n"),
+            ("class:pager-cmd", "  /pipes          "), ("", "Named-pipe IPC\n"),
+            ("class:pager-cmd", "  /langfuse       "), ("", "Langfuse observability\n"),
+            ("class:pager-cmd", "  /sentry         "), ("", "Sentry error tracking\n"),
+            ("class:pager-cmd", "  /acp            "), ("", "ACP protocol (Zed/Cursor)\n"),
+            ("class:pager-cmd", "  /clear          "), ("", "Clear messages  (Ctrl+L)\n"),
+            ("class:pager-cmd", "  /exit           "), ("", "Exit            (Ctrl+D)\n"),
+            ("", "\n"),
+            ("class:pager-heading", "  Shortcuts\n"),
+            ("class:pager-dim", "  Enter       "), ("", "Send message\n"),
+            ("class:pager-dim", "  Esc+Enter   "), ("", "New line\n"),
+            ("class:pager-dim", "  Ctrl+C      "), ("", "Cancel / Clear\n"),
+            ("class:pager-dim", "  Tab         "), ("", "Complete /command\n"),
+            ("", "\n"),
+        ]
 
     def _show_help(self) -> None:
         help_items = [

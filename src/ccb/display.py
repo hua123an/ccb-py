@@ -151,7 +151,27 @@ class _REPLConsole:
 
     In REPL mode we capture as **plain text** (no ANSI) to avoid the
     escape sequences corrupting the prompt_toolkit render.
+
+    When ``_capturing`` is True, output is buffered into ``_capture_lines``
+    instead of being sent to the REPL — used by ``start_capture()`` /
+    ``stop_capture()`` to feed the full-screen pager.
     """
+
+    def __init__(self) -> None:
+        self._capturing: bool = False
+        self._capture_lines: list[tuple[str, str]] = []
+
+    def start_capture(self) -> None:
+        """Begin buffering print() output for the pager."""
+        self._capturing = True
+        self._capture_lines = []
+
+    def stop_capture(self) -> list[tuple[str, str]]:
+        """Stop buffering and return captured (style, text) tuples."""
+        self._capturing = False
+        lines = self._capture_lines
+        self._capture_lines = []
+        return lines
 
     def print(self, *args: Any, **kwargs: Any) -> None:
         repl = _get_repl()
@@ -169,7 +189,10 @@ class _REPLConsole:
                 _plain_buf.write(text + "\n")
             text = _plain_buf.getvalue()
             if text:
-                repl.append_output(text, "class:msg-info")
+                if self._capturing:
+                    self._capture_lines.append(("", text))
+                else:
+                    repl.append_output(text, "class:msg-info")
         else:
             console.print(*args, **kwargs)
 
@@ -214,6 +237,16 @@ def _out(text: str = "", style: str = "", *, rich_obj: Any = None) -> None:
     """Output text, routing to REPL buffer or console as appropriate."""
     repl = _get_repl()
     if repl:
+        # Capture mode: buffer for pager instead of sending to REPL
+        if repl_console._capturing:
+            if rich_obj is not None:
+                _plain_buf.truncate(0)
+                _plain_buf.seek(0)
+                _plain_console.print(rich_obj)
+                text = _plain_buf.getvalue()
+            if text:
+                repl_console._capture_lines.append(("", text))
+            return
         if rich_obj is not None:
             ansi = _rich_capture(rich_obj)
             repl.append_ansi(ansi)
