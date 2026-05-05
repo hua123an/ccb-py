@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import time
 from typing import Any, TYPE_CHECKING
@@ -955,6 +956,43 @@ async def handle_command(
             for agent in coord._agents:
                 icon = {"running": "🔄", "done": "✅", "error": "❌", "idle": "⏸"}.get(agent.status, "?")
                 console.print(f"  {icon} {agent.name} ({agent.role or 'agent'}) — {agent.status}")
+        return True
+
+    # ── Peers / Pipes ──
+    if command in ("/peers", "/pipes"):
+        import os as _os
+        from ccb.pipe_ipc import PipeIPC, _PIPE_DIR
+        from ccb.peer_discovery import PeerDiscovery
+        from ccb.pipes_panel import show_pipes_panel
+
+        if args.strip() == "live":
+            from ccb.pipes_panel import live_pipes_panel
+            pd = state.get("_peer_discovery")
+            if pd is None:
+                print_info("Peer discovery not active. Starting...")
+                pd = PeerDiscovery(instance_id=f"cli-{_os.getpid()}")
+                await pd.start()
+                state["_peer_discovery"] = pd
+            try:
+                await live_pipes_panel(pd.instance_id, pd)
+            except KeyboardInterrupt:
+                pass
+            return True
+
+        # One-shot snapshot
+        pd = state.get("_peer_discovery")
+        if pd:
+            peers = pd.get_peers(include_stale=True)
+            show_pipes_panel(pd.instance_id, peers, title="LAN Peers")
+        else:
+            # Fall back to local pipe scan
+            ipc = PipeIPC()
+            peer_ids = ipc.discover_local_peers()
+            peers = ipc.list_peers()
+            show_pipes_panel(ipc.instance_id, peers, title="Local Pipes")
+            if not peers:
+                console.print("  [dim]No peers found. Start another ccb-py instance to see it here.[/dim]")
+                console.print("  [dim]Use /peers live for a live-refreshing panel.[/dim]")
         return True
 
     # ── Tasks ──
@@ -2026,6 +2064,99 @@ async def handle_command(
             console.print("  Top tools: " + ", ".join(f"{k}({v})" for k, v in top_tools))
         return True
 
+    # ── Feature Flags ──
+    if command == "/flags":
+        import os as _os
+        from ccb.feature_flags import get_flags
+        ff = get_flags()
+        parts_args = args.strip().split(maxsplit=1) if args.strip() else []
+        subcmd = parts_args[0].lower() if parts_args else "list"
+        subarg = parts_args[1] if len(parts_args) > 1 else ""
+
+        if subcmd == "list" or subcmd == "":
+            all_flags = ff.list_flags()
+            if not all_flags:
+                print_info("No feature flags configured.")
+            else:
+                console.print("[bold]Feature Flags:[/bold]")
+                for name, val in sorted(all_flags.items()):
+                    env_key = f"CCB_FLAG_{name.upper()}"
+                    env_override = _os.environ.get(env_key)
+                    if isinstance(val, dict):
+                        val = val.get("defaultValue", val.get("value", "?"))
+                    source = ""
+                    if env_override is not None:
+                        source = " [dim](env override)[/dim]"
+                    status = "[green]ON[/green]" if val else "[red]OFF[/red]"
+                    if not isinstance(val, bool):
+                        status = str(val)
+                    console.print(f"  [bold]{name:30s}[/bold] {status}{source}")
+        elif subcmd == "toggle":
+            flag_name = subarg.strip()
+            if not flag_name:
+                print_info("Usage: /flags toggle <flag_name>")
+            else:
+                current = ff.is_enabled(flag_name)
+                ff.set_override(flag_name, not current)
+                new_state = "ON" if not current else "OFF"
+                print_info(f"Flag '{flag_name}' toggled to {new_state}")
+        elif subcmd == "set":
+            set_parts = subarg.split(maxsplit=1)
+            if len(set_parts) < 2:
+                print_info("Usage: /flags set <flag_name> <value>")
+            else:
+                flag_name, raw_val = set_parts[0], set_parts[1]
+                from ccb.feature_flags import _parse_env_value
+                value = _parse_env_value(raw_val)
+                ff.set_override(flag_name, value)
+                print_info(f"Flag '{flag_name}' set to {value!r}")
+        else:
+            print_info("Usage: /flags [list | toggle <name> | set <name> <value>]")
+        return True
+
+    # ── ACP ──
+    if command == "/acp":
+        try:
+            from ccb.session_restore import SessionRestorer
+            restorer = SessionRestorer()
+            sessions = restorer.list_active_sessions()
+            if not sessions:
+                print_info("No active ACP sessions.")
+            else:
+                console.print("[bold]ACP Sessions:[/bold]")
+                for s in sessions:
+                    conns = restorer.get_active_connections(s)
+                    conn_str = ", ".join(c.ide_type for c in conns) if conns else "none"
+                    console.print(f"  {s[:12]}  connections: {conn_str}")
+        except Exception as e:
+            print_info(f"ACP not available: {e}")
+        return True
+
+    # ── Langfuse ──
+    if command == "/langfuse":
+        try:
+            from ccb.langfuse_monitor import get_monitor
+            mon = get_monitor()
+            if mon and mon._api_key:
+                console.print(f"[green]Langfuse active[/green] — host: {mon._host}")
+            else:
+                print_info("Langfuse not configured. Set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY.")
+        except Exception as e:
+            print_info(f"Langfuse not available: {e}")
+        return True
+
+    # ── Sentry ──
+    if command == "/sentry":
+        try:
+            from ccb.sentry_integration import is_initialized
+            if is_initialized():
+                console.print("[green]Sentry active[/green]")
+            else:
+                print_info("Sentry not configured. Set SENTRY_DSN environment variable.")
+        except Exception as e:
+            print_info(f"Sentry not available: {e}")
+        return True
+
     # ── Skills ──
     if command == "/skills":
         from ccb.skills import load_skills
@@ -2141,6 +2272,11 @@ def _print_help() -> None:
         ("/restore [id]", "Restore from workspace snapshot"),
         ("/sandbox [on|off|status]", "Toggle sandbox mode for safe execution"),
         ("/rewind [n]", "Remove last n messages"),
+        # ── Enterprise ──
+        ("/flags [list|toggle|set]", "Feature flags: list, toggle, or set overrides"),
+        ("/acp", "Show ACP IDE connections"),
+        ("/langfuse", "Langfuse monitoring status"),
+        ("/sentry", "Sentry error tracking status"),
         # ── Skills / Review ──
         ("/skills", "List available skills"),
         ("/review", "Review code changes"),
@@ -2161,6 +2297,7 @@ def _print_help() -> None:
         ("/plan", "Show/toggle plan mode"),
         ("/tasks", "List background tasks"),
         ("/agents [name]", "List/activate agent definitions"),
+        ("/peers [live]", "Show connected instances (live for auto-refresh)"),
         ("/fork", "Fork current session"),
         # ── UI / Preferences ──
         ("/prefill [text]", "Pre-fill model's next reply with text; empty to clear"),

@@ -62,6 +62,11 @@ async def run_turn(
         hooks = load_hooks(session.cwd)
     state = state or {}
 
+    # ── Langfuse: start trace for this turn ──
+    from ccb.langfuse_monitor import get_monitor as _get_lf_monitor
+    _lf = _get_lf_monitor()
+    _trace_id = _lf.trace_start(name="run_turn", metadata={"cwd": session.cwd})
+
     text_mode = output_format in ("text", "json")
     stream_json = output_format == "stream-json"
 
@@ -278,6 +283,13 @@ async def run_turn(
                 print_info("Interrupted.")
                 return
             except Exception as e:
+                # ── Sentry: capture API errors ──
+                try:
+                    from ccb.sentry_integration import capture_exception as _sentry_capture
+                    _sentry_capture(e, context={"round": round_num, "attempt": attempt})
+                except Exception:
+                    pass
+
                 if attempt < max_retries and _is_retryable(e):
                     wait = 2 ** attempt
                     print_info(f"Retrying in {wait}s... ({e})")
@@ -319,6 +331,15 @@ async def run_turn(
         # No tool calls → turn is done; end cost timer before printing
         if not tool_calls:
             cost.end_turn()
+            # ── Langfuse: log generation & end trace ──
+            _lf.generation_log(
+                _trace_id,
+                model=getattr(provider, "_model", ""),
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+                latency_ms=thinking_duration_ms,
+            )
+            _lf.trace_end(_trace_id)
 
         if not text_mode and not stream_json:
             print_usage(usage, thinking_duration_ms=thinking_duration_ms)
@@ -356,6 +377,7 @@ async def run_turn(
         session.save()
 
     cost.end_turn()
+    _lf.trace_end(_trace_id)
     print_info(f"Reached max tool rounds ({max_tool_rounds})")
 
 
@@ -498,12 +520,26 @@ async def execute_tool_calls(
 
         # Execute tool
         print_tool_call(tc.name, tc.input)
+        # ── Sentry: breadcrumb for tool call ──
+        try:
+            from ccb.sentry_integration import add_breadcrumb as _sentry_breadcrumb
+            _sentry_breadcrumb("tool", f"Executing {tc.name}", data={"input_keys": list(tc.input.keys()) if isinstance(tc.input, dict) else []})
+        except Exception:
+            pass
 
         # Pre-tool hook
         await run_hooks("pre_tool_call", hooks, {"tool_name": tc.name, "input": tc.input}, cwd)
 
         try:
-            tool_result = await tool.execute(tc.input, cwd)
+            # ── Sentry: wrap tool execution in a span ──
+            # ── Langfuse: span per tool call ──
+            from ccb.sentry_integration import tool_span as _sentry_tool_span
+            from ccb.langfuse_monitor import get_monitor as _get_lf_mon
+            _lf_mon = _get_lf_mon()
+            _lf_sid = _lf_mon.span_start(_trace_id, f"tool:{tc.name}", input=tc.input)
+            with _sentry_tool_span(tc.name, tc.input):
+                tool_result = await tool.execute(tc.input, cwd)
+            _lf_mon.span_end(_lf_sid, output=tool_result.output[:500])
             print_tool_result(
                 tc.name, tool_result.output, tool_result.is_error,
                 input_data=tc.input,

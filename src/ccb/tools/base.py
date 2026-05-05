@@ -33,6 +33,14 @@ class Tool(ABC):
         """Whether this tool requires user permission before execution."""
         return True
 
+    @property
+    def requires_confirmation(self) -> bool:
+        """
+        Whether this tool requires explicit user confirmation for each execution.
+        Used for high-risk tools (e.g. computer control, browser automation).
+        """
+        return False
+
     def to_api_schema(self) -> dict[str, Any]:
         return {
             "name": self.name,
@@ -83,6 +91,8 @@ def create_default_registry(cwd: str) -> ToolRegistry:
     from ccb.tools.plan import EnterPlanModeTool, ExitPlanModeTool
     from ccb.tools.code_interpreter import CodeInterpreterTool
     from ccb.tools.image_gen import ImageGenerationTool
+    from ccb.tools.computer_use import ComputerUseTool
+    from ccb.tools.chrome_use import ChromeUseTool
 
     registry = ToolRegistry()
     for tool in [
@@ -106,6 +116,8 @@ def create_default_registry(cwd: str) -> ToolRegistry:
         ReadMcpResourceTool(),
         EnterPlanModeTool(),
         ExitPlanModeTool(),
+        ComputerUseTool(),
+        ChromeUseTool(),
     ]:
         registry.register(tool)
     return registry
