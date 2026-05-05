@@ -4,7 +4,7 @@ Allows saving and restoring session state when switching between IDEs
 (VS Code, Zed, Cursor, etc.) and supports simultaneous multi-IDE access
 to the same session.
 
-Session states are stored in ``~/.claude/acp_sessions/``.
+Session states are stored in ``~/.ccb/acp_sessions/``.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import json
 import logging
 import time
 import threading
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -288,7 +288,7 @@ class SessionRestorer:
     - Track active connections: session_id -> [IDEConnection, ...].
     - Translate state between IDE formats for seamless switching.
     - Supports simultaneous multi-IDE access to the same session.
-    - Persists to ``~/.claude/acp_sessions/``.
+    - Persists to ``~/.ccb/acp_sessions/``.
     """
 
     def __init__(self, storage_dir: Path | None = None) -> None:

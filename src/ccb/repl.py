@@ -17,14 +17,13 @@ Layout (messages grow upward from the input line):
 from __future__ import annotations
 
 import asyncio
-import os
 import shutil
 import time
 from typing import Any
 
 from prompt_toolkit import Application
 from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.completion import Completer, Completion, WordCompleter
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import ANSI as PTK_ANSI
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import (
@@ -39,7 +38,6 @@ from prompt_toolkit.layout import (
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension as D
-from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.styles import Style
 
@@ -73,20 +71,14 @@ SLASH_COMMAND_DESCRIPTIONS: dict[str, str] = {
     "/stats": "Show detailed statistics",
     "/summary": "Summarize current conversation",
     "/history": "Show message history",
-    # Sessions
+    # Sessions (see detailed below)
     "/sessions": "List saved sessions (current project)",
-    "/resume": "Resume a prior session",
     "/continue": "Continue the last session",
     "/session": "Session management",
     "/rename": "Rename current session",
     "/tag": "Tag current session",
     "/share": "Share session output",
-    # Git
-    "/diff": "Show git diff",
-    "/branch": "Show git branches",
-    "/commit": "Create a git commit",
-    "/undo": "Undo last change",
-    "/redo": "Redo last undone change",
+    # Git (detailed descriptions below)
     "/checkpoint": "Create a checkpoint",
     "/restore": "Restore from checkpoint",
     "/rewind": "Rewind conversation",
@@ -115,7 +107,7 @@ SLASH_COMMAND_DESCRIPTIONS: dict[str, str] = {
     # Copy / export
     "/copy": "Copy last message to clipboard",
     "/export": "Export session (json/md/html)",
-    # Git
+    # Git detailed
     "/commit": "Auto-generate commit message and commit",
     "/diff": "Show git diff (staged/unstaged)",
     "/branch": "List/switch/create branches",
@@ -185,7 +177,6 @@ SLASH_COMMAND_DESCRIPTIONS: dict[str, str] = {
     "/release-notes": "Show release notes",
     "/version": "Show version",
     "/buddy": "Toggle buddy mode",
-    "/exit": "Exit ccb",
 }
 
 # Flat list for tab completion word lookup (used as fallback)
@@ -333,6 +324,7 @@ class REPLApp:
         # Pending image/file attachments (populated by /image, drag-drop, Ctrl+V)
         self._pending_images: list[dict[str, Any]] = []
         self._pending_files: list[dict[str, Any]] = []
+        self._nested_app_active: bool = False  # True while a nested overlay is running
 
         # Build UI
         self._build_layout()
@@ -416,6 +408,8 @@ class REPLApp:
             self._refresh_handle = None
 
     def _invalidate(self) -> None:
+        if self._nested_app_active:
+            return  # don't redraw while a nested overlay is running
         try:
             self.app.invalidate()
         except Exception:
@@ -494,7 +488,7 @@ class REPLApp:
         loop = asyncio.get_event_loop()
         if loop.is_running():
             # We're already inside the event loop — create a future
-            future = asyncio.ensure_future(
+            asyncio.ensure_future(
                 self.ask_permission_async(tool_name, summary))
             # This won't work synchronously; caller must use async version
             raise RuntimeError("Use ask_permission_async in async context")
@@ -736,12 +730,11 @@ class REPLApp:
         fragments — one line may span many fragments when inline formatting
         is present) and prepend empty-line padding for bottom-anchoring.
 
-        _scroll_back controls how far back in history we are viewing.
-        When _scroll_back == 0 (default), the newest messages are shown.
+        Visual line counts account for wrapping so that long lines don't push
+        the newest messages off the bottom of the viewport.
         """
         raw: list[tuple[str, str]] = list(self._msg_lines)
         if self._stream_text:
-            # Streaming text with bold orange border, matching official Claude
             for sline in self._stream_text.split("\n"):
                 raw.append(("class:msg-assistant-border", "  ┃ "))
                 raw.append(("class:streaming", f"{sline}\n"))
@@ -757,53 +750,77 @@ class REPLApp:
         if not raw:
             raw.append(("class:dim", "  Type a message to get started. /help for commands.\n"))
 
-        # Group into DISPLAY LINES (one entry = one visible line worth of frags)
         line_groups = self._group_by_line(raw)
         total_lines = len(line_groups)
 
-        # Estimate available height for the message area
-        term_h = shutil.get_terminal_size().lines
-        # status(2) + divider(1) + divider(1) + input(1) + footer(1) = 6 fixed lines
+        # Use prompt_toolkit's own size to stay in sync with the layout engine
+        try:
+            _size = self.app.output.get_size()
+            term_h = _size.rows
+            cols = _size.columns
+        except Exception:
+            _ts = shutil.get_terminal_size()
+            term_h = _ts.lines
+            cols = _ts.columns
+
+        # status(2) + divider(1) + divider(1) + input(1) + footer(1) = 6
         avail = max(3, term_h - 6)
 
-        if total_lines <= avail:
-            # Everything fits → pad top so content hugs the bottom (near input)
-            pad = avail - total_lines
+        # Estimate how many visual rows a logical line group occupies when
+        # wrapped to the terminal width.  This prevents long lines from
+        # consuming more than their fair share of vertical space.
+        def _vis(group: list[tuple[str, str]]) -> int:
+            width = sum(len(text) for _, text in group)
+            if cols <= 0 or width <= 0:
+                return 1
+            return max(1, (width + cols - 1) // cols)
+
+        vis_counts = [_vis(g) for g in line_groups]
+        total_visual = sum(vis_counts)
+
+        if total_visual <= avail:
+            # Everything fits — pad top so content hugs the bottom
+            pad = avail - total_visual
             result: list[tuple[str, str]] = []
             if pad > 0:
                 result.append(("", "\n" * pad))
             result.extend(self._flatten_line_groups(line_groups))
             return result
 
-        # More content than viewport — slice a window of `avail` lines
-        # scroll_back=0 → bottom of content; scroll_back>0 → further up
+        # More content than viewport — select groups from the bottom up,
+        # counting *visual* lines so wrapped content doesn't overflow.
         end_idx = total_lines - self._scroll_back
-        start_idx = end_idx - avail
-        if start_idx < 0:
-            start_idx = 0
-            end_idx = min(avail, total_lines)
-        if end_idx > total_lines:
-            end_idx = total_lines
-            start_idx = max(0, end_idx - avail)
+        end_idx = max(0, min(end_idx, total_lines))
 
-        visible_groups = line_groups[start_idx:end_idx]
-        visible_count = len(visible_groups)
+        visual_used = 0
+        start_idx = end_idx
+        for i in range(end_idx - 1, -1, -1):
+            vl = vis_counts[i]
+            if visual_used + vl > avail:
+                break
+            visual_used += vl
+            start_idx = i
 
-        # Header for hidden-above indicator (takes 1 line of the avail budget)
+        # Header for hidden-above indicator
         header_frags: list[tuple[str, str]] = []
         if start_idx > 0:
             header_frags = [
                 ("class:dim", f"  ↑ {start_idx} more lines (Ctrl+↑ or mouse wheel)\n")
             ]
-            # One of `avail` slots goes to header → drop one line from visible end
-            if visible_count > avail - 1:
-                visible_groups = visible_groups[: avail - 1]
-                visible_count = len(visible_groups)
+            # Recount: header costs 1 visual line
+            visual_used = 1
+            start_idx = end_idx
+            for i in range(end_idx - 1, -1, -1):
+                vl = vis_counts[i]
+                if visual_used + vl > avail:
+                    break
+                visual_used += vl
+                start_idx = i
 
-        # Pad top so the visible tail sits at the bottom of the message area
-        header_lines = 1 if header_frags else 0
-        pad = max(0, avail - visible_count - header_lines)
+        visible_groups = line_groups[start_idx:end_idx]
 
+        # Pad top so visible content sits at the bottom
+        pad = max(0, avail - visual_used)
         result: list[tuple[str, str]] = []
         if pad > 0:
             result.append(("", "\n" * pad))
@@ -1030,7 +1047,7 @@ class REPLApp:
             return
         try:
             import subprocess
-            proc = subprocess.run(
+            subprocess.run(
                 ["pbcopy"], input=text.encode(), check=True,
                 capture_output=True, timeout=3,
             )
@@ -1212,7 +1229,7 @@ class REPLApp:
                 import traceback
                 from pathlib import Path
                 try:
-                    log_path = Path.home() / ".claude" / "ccb-debug.log"
+                    log_path = Path.home() / ".ccb" / "ccb-debug.log"
                     log_path.parent.mkdir(parents=True, exist_ok=True)
                     with log_path.open("a") as f:
                         f.write(f"\n--- {text} @ {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
@@ -1221,7 +1238,7 @@ class REPLApp:
                     pass
                 self.append_output(
                     f"  ✗ Command error: {e}\n"
-                    f"  [dim]Full traceback: ~/.claude/ccb-debug.log[/dim]\n",
+                    f"  [dim]Full traceback: ~/.ccb/ccb-debug.log[/dim]\n",
                     "class:msg-error",
                 )
                 return

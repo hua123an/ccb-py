@@ -42,7 +42,7 @@ class AnalyticsTracker:
 
     def __init__(self, data_dir: Path | None = None, enabled: bool = True):
         self.enabled = enabled
-        self._dir = data_dir or (Path.home() / ".claude" / "analytics")
+        self._dir = data_dir or (Path.home() / ".ccb" / "analytics")
         self._dir.mkdir(parents=True, exist_ok=True)
         self._events: list[UsageEvent] = []
         self._session = SessionStats()

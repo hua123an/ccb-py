@@ -8,9 +8,7 @@ Usage:
 """
 from __future__ import annotations
 
-import asyncio
 import json
-import time
 from pathlib import Path
 from typing import Any
 
@@ -28,8 +26,8 @@ class OAuthClient:
         self._load_configs()
 
     def _load_configs(self) -> None:
-        """Load OAuth client configs from ~/.claude/oauth.json."""
-        config_path = Path.home() / ".claude" / "oauth.json"
+        """Load OAuth client configs from ~/.ccb/oauth.json."""
+        config_path = Path.home() / ".ccb" / "oauth.json"
         if not config_path.exists():
             return
         try:
@@ -45,7 +43,7 @@ class OAuthClient:
             pass
 
     def _save_configs(self) -> None:
-        config_path = Path.home() / ".claude" / "oauth.json"
+        config_path = Path.home() / ".ccb" / "oauth.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
         data = {}
         for provider, cfg in self._configs.items():

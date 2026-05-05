@@ -6,7 +6,6 @@ request, the client runs it through its LLM and returns the result.
 """
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 

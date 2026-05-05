@@ -14,7 +14,7 @@ CURRENT_VERSION = 2
 
 
 def _config_dir() -> Path:
-    return Path.home() / ".claude"
+    return Path.home() / ".ccb"
 
 
 def _backup(path: Path) -> Path:

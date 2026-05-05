@@ -5,13 +5,11 @@ import asyncio
 import json
 import os
 import subprocess
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ccb.config import claude_dir, claude_json_path
-from ccb.tools.base import Tool, ToolResult
+from ccb.config import claude_json_path
 
 
 @dataclass
@@ -45,10 +43,10 @@ class MCPManager:
         return self._servers
 
     def discover_servers(self) -> dict[str, dict[str, Any]]:
-        """Find MCP server configs from ~/.claude.json and ~/.claude/settings.json."""
+        """Find MCP server configs from ~/.ccb.json and ~/.ccb/settings.json."""
         configs: dict[str, dict[str, Any]] = {}
 
-        # From ~/.claude.json
+        # From ~/.ccb.json
         gcfg_path = claude_json_path()
         if gcfg_path.exists():
             try:
@@ -125,7 +123,7 @@ class MCPManager:
         server._read_task = asyncio.create_task(self._read_loop(server))
 
         # Initialize
-        result = await self._send_request(server, "initialize", {
+        await self._send_request(server, "initialize", {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
             "clientInfo": {"name": "ccb", "version": "0.1.0"},

@@ -29,3 +29,7 @@ conversation_*.md
 
 # Debug logs
 *.log
+.claude/
+.claude/
+.omc/
+TODO_PROGRESS.md

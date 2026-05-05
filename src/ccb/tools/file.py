@@ -141,11 +141,6 @@ class FileEditTool(Tool):
             new_content = content.replace(old_string, new_string, 1)
 
         # Compute line diff
-        old_lines = content.splitlines()
-        new_lines = new_content.splitlines()
-        added = max(0, len(new_lines) - len(old_lines))
-        removed = max(0, len(old_lines) - len(new_lines))
-        # More precise: count actual changed lines from old/new string
         old_str_lines = old_string.count("\n") + (1 if old_string else 0)
         new_str_lines = new_string.count("\n") + (1 if new_string else 0)
         replacements = count if replace_all else 1

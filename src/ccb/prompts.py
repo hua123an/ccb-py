@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 
 def get_system_prompt(cwd: str, model: str = "") -> str:
@@ -47,9 +46,9 @@ def get_system_prompt(cwd: str, model: str = "") -> str:
 
 def _find_claude_md(cwd: str) -> list[Path]:
     """Find CLAUDE.md files: home > git root > parent dirs > cwd.
-    
+
     Search order (deduped):
-    1. ~/.claude/CLAUDE.md (user-global)
+    1. ~/.ccb/CLAUDE.md (user-global)
     2. Git repo root CLAUDE.md
     3. Each parent dir from git root to cwd
     4. cwd/CLAUDE.md
@@ -65,7 +64,7 @@ def _find_claude_md(cwd: str) -> list[Path]:
             paths.append(rp)
 
     # User-global
-    _try_add(Path.home() / ".claude" / "CLAUDE.md")
+    _try_add(Path.home() / ".ccb" / "CLAUDE.md")
 
     # Find git root
     git_root = _find_git_root(cwd)

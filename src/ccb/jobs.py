@@ -11,7 +11,7 @@ import json
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
@@ -61,7 +61,7 @@ class JobState:
 
 
 def _jobs_dir() -> Path:
-    return Path.home() / ".claude" / "jobs"
+    return Path.home() / ".ccb" / "jobs"
 
 
 class JobManager:
@@ -186,7 +186,7 @@ class JobManager:
 
         try:
             if provider and registry:
-                from ccb.api.base import Message, Role
+                from ccb.api.base import Role
                 from ccb.loop import run_turn
                 from ccb.session import Session
 

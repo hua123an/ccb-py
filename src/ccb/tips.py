@@ -109,7 +109,7 @@ class TipScheduler:
         self.history = history or TipHistory()
         self.cooldown = cooldown_seconds
         self.show_probability = show_probability
-        self._persistence_path = Path.home() / ".claude" / "tip-history.json"
+        self._persistence_path = Path.home() / ".ccb" / "tip-history.json"
 
     def should_show_tip(self) -> bool:
         """Check if we should show a tip now."""

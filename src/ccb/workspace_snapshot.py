@@ -7,7 +7,7 @@ Captures complete project state beyond git stash:
 - Build artifacts state
 - Session context
 
-Snapshots are stored in ~/.claude/snapshots/<snapshot_id>.json
+Snapshots are stored in ~/.ccb/snapshots/<snapshot_id>.json
 """
 from __future__ import annotations
 
@@ -29,20 +29,20 @@ class WorkspaceSnapshot:
     description: str
     cwd: str
     git_root: str
-    
+
     # Git state
     git_branch: str
     git_commit: str
     git_dirty: bool
     git_untracked_files: list[str] = field(default_factory=list)
     git_stash_list: list[dict] = field(default_factory=list)
-    
+
     # Environment (filtered)
     env_vars: dict[str, str] = field(default_factory=dict)
-    
+
     # Dependencies
     dep_manifests: dict[str, str] = field(default_factory=dict)  # path -> hash
-    
+
     # Session context
     session_id: str = ""
     session_messages_count: int = 0
@@ -72,7 +72,7 @@ class WorkspaceSnapshot:
 
 class SnapshotManager:
     """Manage workspace snapshots."""
-    
+
     DEP_MANIFESTS = [
         "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
         "requirements.txt", "pyproject.toml", "poetry.lock", "Pipfile", "Pipfile.lock",
@@ -80,7 +80,7 @@ class SnapshotManager:
         "go.mod", "go.sum", "composer.json", "composer.lock",
         "pom.xml", "build.gradle", "Cargo.toml",
     ]
-    
+
     ENV_ALLOWLIST = [
         "PATH", "HOME", "USER", "SHELL", "TERM", "EDITOR",
         "LANG", "LC_ALL", "TZ", "PWD", "OLDPWD",
@@ -88,11 +88,11 @@ class SnapshotManager:
         "PYTHONPATH", "JAVA_HOME", "GOPATH", "RUSTUP_HOME",
         "CC", "CXX", "AR", "LD",
     ]
-    
+
     def __init__(self, storage_dir: Path | None = None):
-        self._storage = storage_dir or Path.home() / ".claude" / "snapshots"
+        self._storage = storage_dir or Path.home() / ".ccb" / "snapshots"
         self._storage.mkdir(parents=True, exist_ok=True)
-    
+
     def _run_git(self, cwd: str, *args: str) -> tuple[int, str, str]:
         """Run git command, return (code, stdout, stderr)."""
         try:
@@ -106,12 +106,12 @@ class SnapshotManager:
             return proc.returncode, proc.stdout, proc.stderr
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return 1, "", "git not available or timeout"
-    
+
     def _find_git_root(self, cwd: str) -> str | None:
         """Find git root for a directory."""
         code, out, _ = self._run_git(cwd, "rev-parse", "--show-toplevel")
         return out.strip() if code == 0 else None
-    
+
     def _hash_file(self, path: Path) -> str:
         """Calculate SHA256 hash of file content."""
         try:
@@ -119,11 +119,11 @@ class SnapshotManager:
             return hashlib.sha256(content).hexdigest()[:16]
         except OSError:
             return ""
-    
+
     def _capture_env(self) -> dict[str, str]:
         """Capture filtered environment variables."""
         return {k: v for k, v in os.environ.items() if k in self.ENV_ALLOWLIST}
-    
+
     def _capture_deps(self, git_root: str) -> dict[str, str]:
         """Capture dependency manifest hashes."""
         root = Path(git_root)
@@ -133,7 +133,7 @@ class SnapshotManager:
             if path.exists():
                 result[manifest] = self._hash_file(path)
         return result
-    
+
     def create(
         self,
         cwd: str,
@@ -143,20 +143,20 @@ class SnapshotManager:
     ) -> WorkspaceSnapshot:
         """Create a new workspace snapshot."""
         snapshot_id = f"snap_{int(time.time())}_{os.urandom(4).hex()}"
-        
+
         # Find git root
         git_root = self._find_git_root(cwd) or cwd
-        
+
         # Git state
         code, branch, _ = self._run_git(git_root, "branch", "--show-current")
         git_branch = branch.strip() if code == 0 else "unknown"
-        
+
         code, commit, _ = self._run_git(git_root, "rev-parse", "HEAD")
         git_commit = commit.strip()[:12] if code == 0 else "unknown"
-        
+
         code, status_out, _ = self._run_git(git_root, "status", "--porcelain")
         git_dirty = bool(status_out.strip()) if code == 0 else False
-        
+
         # Untracked files
         code, untracked, _ = self._run_git(
             git_root, "ls-files", "--others", "--exclude-standard"
@@ -164,7 +164,7 @@ class SnapshotManager:
         git_untracked_files = [
             f for f in untracked.strip().split("\n") if f
         ] if code == 0 else []
-        
+
         # Stash list
         code, stash_out, _ = self._run_git(git_root, "stash", "list")
         git_stash_list = [
@@ -172,7 +172,7 @@ class SnapshotManager:
             for i, line in enumerate(stash_out.strip().split("\n"))
             if line
         ] if code == 0 else []
-        
+
         snapshot = WorkspaceSnapshot(
             id=snapshot_id,
             created_at=time.time(),
@@ -189,16 +189,16 @@ class SnapshotManager:
             session_id=session_id,
             session_messages_count=session_messages_count,
         )
-        
+
         # Save to disk
         self._save(snapshot)
         return snapshot
-    
+
     def _save(self, snapshot: WorkspaceSnapshot) -> None:
         """Save snapshot to storage."""
         path = self._storage / f"{snapshot.id}.json"
         path.write_text(json.dumps(snapshot.to_dict(), indent=2))
-    
+
     def load(self, snapshot_id: str) -> WorkspaceSnapshot | None:
         """Load a snapshot from storage."""
         path = self._storage / f"{snapshot_id}.json"
@@ -209,7 +209,7 @@ class SnapshotManager:
             return WorkspaceSnapshot.from_dict(data)
         except (json.JSONDecodeError, TypeError):
             return None
-    
+
     def list_all(self) -> list[WorkspaceSnapshot]:
         """List all snapshots."""
         snapshots = []
@@ -220,7 +220,7 @@ class SnapshotManager:
             except (json.JSONDecodeError, TypeError):
                 continue
         return snapshots
-    
+
     def delete(self, snapshot_id: str) -> bool:
         """Delete a snapshot."""
         path = self._storage / f"{snapshot_id}.json"
@@ -228,28 +228,28 @@ class SnapshotManager:
             path.unlink()
             return True
         return False
-    
+
     def restore_git(self, snapshot: WorkspaceSnapshot, cwd: str) -> dict[str, Any]:
         """Restore git state from snapshot.
-        
+
         Returns result dict with status and any errors.
         """
         results = {"success": True, "steps": []}
         git_root = self._find_git_root(cwd) or cwd
-        
+
         # Check if we're in the right repo
         code, current_commit, _ = self._run_git(git_root, "rev-parse", "HEAD")
         if code != 0:
             return {"success": False, "error": "Not a git repository"}
-        
+
         current_commit = current_commit.strip()[:12]
-        
+
         # Stash current changes if dirty
         code, _, _ = self._run_git(git_root, "diff", "--quiet")
         if code != 0:
             self._run_git(git_root, "stash", "push", "-m", f"pre-snapshot-restore-{snapshot.id[:8]}")
             results["steps"].append("stashed current changes")
-        
+
         # Checkout target commit
         if current_commit != snapshot.git_commit:
             code, out, err = self._run_git(git_root, "checkout", snapshot.git_commit)
@@ -258,16 +258,16 @@ class SnapshotManager:
                 results["error"] = f"Failed to checkout {snapshot.git_commit}: {err}"
                 return results
             results["steps"].append(f"checked out {snapshot.git_commit}")
-        
+
         # Note: We don't restore untracked files automatically for safety
         if snapshot.git_untracked_files:
             results["steps"].append(f"note: {len(snapshot.git_untracked_files)} untracked files in snapshot (not auto-restored)")
-        
+
         return results
-    
+
     def compare(self, snapshot: WorkspaceSnapshot, cwd: str) -> dict[str, Any]:
         """Compare current workspace with snapshot.
-        
+
         Returns dict showing what's changed.
         """
         git_root = self._find_git_root(cwd) or cwd
@@ -277,7 +277,7 @@ class SnapshotManager:
             "deps_changed": [],
             "untracked_files_count": 0,
         }
-        
+
         # Git comparison
         code, current_branch, _ = self._run_git(git_root, "branch", "--show-current")
         if code == 0:
@@ -286,7 +286,7 @@ class SnapshotManager:
                 changes["git_branch_changed"] = True
                 changes["current_branch"] = current_branch
                 changes["snapshot_branch"] = snapshot.git_branch
-        
+
         code, current_commit, _ = self._run_git(git_root, "rev-parse", "HEAD")
         if code == 0:
             current_commit = current_commit.strip()[:12]
@@ -294,14 +294,14 @@ class SnapshotManager:
                 changes["git_commit_changed"] = True
                 changes["current_commit"] = current_commit
                 changes["snapshot_commit"] = snapshot.git_commit
-        
+
         # Dependencies comparison
         current_deps = self._capture_deps(git_root)
         for manifest, snap_hash in snapshot.dep_manifests.items():
             curr_hash = current_deps.get(manifest, "")
             if curr_hash != snap_hash:
                 changes["deps_changed"].append(manifest)
-        
+
         # Untracked files
         code, untracked, _ = self._run_git(
             git_root, "ls-files", "--others", "--exclude-standard"
@@ -309,7 +309,7 @@ class SnapshotManager:
         changes["untracked_files_count"] = len([
             f for f in untracked.strip().split("\n") if f
         ]) if code == 0 else 0
-        
+
         return changes
 
 

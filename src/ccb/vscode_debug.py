@@ -5,9 +5,7 @@ Chrome DevTools Protocol (CDP) for VS Code attach-mode debugging.
 """
 from __future__ import annotations
 
-import asyncio
 import json
-import os
 import time
 import uuid
 from dataclasses import dataclass, field

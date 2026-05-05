@@ -335,17 +335,47 @@ async def select_one(
             if text and text.isprintable() and text not in ("\r", "\n"):
                 query[0] += text
 
-    control = FormattedTextControl(_get_fragments)
+    # Pad content to fill the full terminal so the parent REPL doesn't bleed through.
+    try:
+        term_h = os.get_terminal_size().lines
+    except OSError:
+        term_h = 40
+
+    def _padded_fragments() -> list[tuple[str, str]]:
+        frags = _get_fragments()
+        # Count how many lines the select box takes
+        line_count = sum(1 for _, t in frags if "\n" in t)
+        pad = max(0, term_h - line_count - 1)
+        if pad > 0:
+            frags.append(("", "\n" * pad))
+        return frags
+
+    control = FormattedTextControl(_padded_fragments)
+
+    # Suspend parent REPL renderer so it doesn't draw behind us
+    from ccb.repl import get_active_repl
+    _parent = get_active_repl()
+    if _parent is not None:
+        _parent._nested_app_active = True
+        try:
+            _parent.app.renderer.erase()
+            _parent.app.renderer.erase_when_done = False
+        except Exception:
+            pass
+
     selector_app: Application[int | None] = Application(
         layout=Layout(Window(control, wrap_lines=False)),
         key_bindings=kb,
         style=SELECT_STYLE,
-        full_screen=True,  # always full-screen so it takes over cleanly
+        full_screen=True,
+        alternate_screen=True,  # use separate screen buffer so parent can't bleed through
         mouse_support=False,
     )
     try:
         return await selector_app.run_async()
     finally:
+        if _parent is not None:
+            _parent._nested_app_active = False
         await _restore_parent_repl()
 
 
@@ -402,14 +432,27 @@ async def ask_text(
         style="class:border",
     )
 
+    # Suspend parent REPL renderer so it doesn't draw behind us
+    from ccb.repl import get_active_repl
+    _parent = get_active_repl()
+    if _parent is not None:
+        _parent._nested_app_active = True
+        try:
+            _parent.app.renderer.erase()
+        except Exception:
+            pass
+
     app: Application[str | None] = Application(
         layout=Layout(frame, focused_element=text_area),
         key_bindings=kb,
         style=SELECT_STYLE,
         full_screen=True,
+        alternate_screen=True,
         mouse_support=False,
     )
     try:
         return await app.run_async()
     finally:
+        if _parent is not None:
+            _parent._nested_app_active = False
         await _restore_parent_repl()

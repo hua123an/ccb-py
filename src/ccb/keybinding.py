@@ -6,9 +6,8 @@ resolving conflicts.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
 
 
 @dataclass
@@ -61,7 +60,7 @@ class KeyBindingManager:
 
     def load_user_config(self, path: Path | None = None) -> int:
         """Load user keybinding overrides from JSON. Returns count loaded."""
-        path = path or (Path.home() / ".claude" / "keybindings.json")
+        path = path or (Path.home() / ".ccb" / "keybindings.json")
         if not path.exists():
             return 0
         try:
@@ -80,7 +79,7 @@ class KeyBindingManager:
             return 0
 
     def save_user_config(self, path: Path | None = None) -> None:
-        path = path or (Path.home() / ".claude" / "keybindings.json")
+        path = path or (Path.home() / ".ccb" / "keybindings.json")
         data = [
             {"keys": b.keys, "action": b.action, "mode": b.mode, "description": b.description}
             for b in self._bindings

@@ -77,7 +77,6 @@ def _heuristic_summary(
         name = unique[0]
         count = len(names)
         if name == "bash":
-            cmds = [tc.get("input", {}).get("command", "")[:30] for tc in tool_calls]
             return f"Ran {count} command{'s' if count > 1 else ''}"
         if name == "file_read":
             return f"Read {count} file{'s' if count > 1 else ''}"
@@ -88,7 +87,7 @@ def _heuristic_summary(
         if name == "grep":
             return f"Searched {count} pattern{'s' if count > 1 else ''}"
         if name == "glob":
-            return f"Listed files"
+            return "Listed files"
         return f"Used {name}" + (f" ×{count}" if count > 1 else "")
 
     if len(unique) <= 3:

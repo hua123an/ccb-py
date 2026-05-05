@@ -113,7 +113,7 @@ class OpenAIProvider(Provider):
             from pathlib import Path
             import time as _time
             try:
-                log = Path.home() / ".claude" / "ccb-debug.log"
+                log = Path.home() / ".ccb" / "ccb-debug.log"
                 log.parent.mkdir(parents=True, exist_ok=True)
                 base_url = getattr(self._client, "base_url", "?")
                 with log.open("a") as f:

@@ -2,7 +2,7 @@
 
 Supports remote flag evaluation via GrowthBook API, local overrides via
 environment variables (``CCB_FLAG_<NAME>=1``) and a JSON file at
-``~/.claude/feature_flags.json``.
+``~/.ccb/feature_flags.json``.
 
 Auto-refreshes remote flags every 5 minutes in the background.
 """
@@ -24,7 +24,7 @@ try:
 except ImportError:
     _HAS_HTTPX = False
 
-_FLAGS_PATH = Path.home() / ".claude" / "feature_flags.json"
+_FLAGS_PATH = Path.home() / ".ccb" / "feature_flags.json"
 _REFRESH_INTERVAL = 300.0  # 5 minutes
 
 
@@ -33,7 +33,7 @@ class FeatureFlags:
 
     Priority (highest wins):
       1. Environment variables ``CCB_FLAG_<UPPER_NAME>=1|0|<json_value>``
-      2. Local overrides file ``~/.claude/feature_flags.json``
+      2. Local overrides file ``~/.ccb/feature_flags.json``
       3. Remote flags fetched from GrowthBook (or compatible API)
 
     Remote flags are fetched in a background daemon thread every
@@ -148,7 +148,7 @@ class FeatureFlags:
         return None
 
     def _load_local_overrides(self) -> None:
-        """Load overrides from ~/.claude/feature_flags.json."""
+        """Load overrides from ~/.ccb/feature_flags.json."""
         if not _FLAGS_PATH.exists():
             return
         try:

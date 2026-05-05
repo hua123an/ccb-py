@@ -6,7 +6,6 @@ and _restore_parent_repl() cleans up after exit.
 """
 from __future__ import annotations
 
-import asyncio
 from typing import Sequence
 
 from prompt_toolkit import Application
@@ -166,6 +165,7 @@ async def show_pager(
         key_bindings=kb,
         style=PAGER_STYLE,
         full_screen=True,
+        alternate_screen=True,
         mouse_support=True,
     )
 
@@ -183,8 +183,20 @@ async def show_pager(
 
     app.renderer.render = _patched_render
 
+    # Suspend parent REPL renderer so it doesn't draw behind us
+    from ccb.repl import get_active_repl
+    _parent = get_active_repl()
+    if _parent is not None:
+        _parent._nested_app_active = True
+        try:
+            _parent.app.renderer.erase()
+        except Exception:
+            pass
+
     try:
         await app.run_async()
     finally:
+        if _parent is not None:
+            _parent._nested_app_active = False
         from ccb.select_ui import _restore_parent_repl
         await _restore_parent_repl()

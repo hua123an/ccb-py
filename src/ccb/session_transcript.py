@@ -24,7 +24,7 @@ def export_transcript(session: Any, include_tools: bool = True) -> str:
     lines: list[str] = []
 
     # Header
-    lines.append(f"# Session Transcript")
+    lines.append("# Session Transcript")
     lines.append("")
     lines.append(f"- **Session ID**: {session.id}")
     lines.append(f"- **Model**: {session.model}")

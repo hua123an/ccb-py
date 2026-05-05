@@ -5,7 +5,6 @@ with Normal/Insert/Visual mode indicators and custom mappings.
 """
 from __future__ import annotations
 
-from typing import Any
 
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent

@@ -6,7 +6,6 @@ system STT or external API (Whisper, etc.).
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import subprocess
 import tempfile

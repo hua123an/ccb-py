@@ -1,11 +1,8 @@
 """Skills and Workflows - load custom prompt commands from .claude/skills/ and .windsurf/workflows/."""
 from __future__ import annotations
 
-import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from ccb.config import claude_dir
 

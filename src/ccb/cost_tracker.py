@@ -9,7 +9,6 @@ Mirrors the official Claude Code cost tracker. Provides:
 from __future__ import annotations
 
 import time
-from typing import Any
 
 
 # ── Per-model pricing (USD per 1M tokens, input / output) ──────────────

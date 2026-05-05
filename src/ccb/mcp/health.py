@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ccb.mcp.client import MCPManager, MCPServer
+    from ccb.mcp.client import MCPManager
 
 
 class ConnectionState(str, Enum):

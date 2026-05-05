@@ -6,7 +6,6 @@ and monitor server status from any browser.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import time

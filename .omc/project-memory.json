@@ -1,0 +1,368 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1777912380959,
+  "projectRoot": "/Users/huaan/ccb-py",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Python",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "pyproject.toml"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": "pytest",
+    "lintCommand": "ruff check",
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "src",
+      "tests"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 0,
+      "lastAccessed": 1777912380927,
+      "keyFiles": []
+    },
+    "tests": {
+      "path": "tests",
+      "purpose": "Test files",
+      "fileCount": 21,
+      "lastAccessed": 1777912380927,
+      "keyFiles": [
+        "__init__.py",
+        "test_analytics.py",
+        "test_bridge.py",
+        "test_compact.py",
+        "test_config.py"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "src/ccb/commands.py",
+      "accessCount": 131,
+      "lastAccessed": 1777985165646,
+      "type": "directory"
+    },
+    {
+      "path": "src/ccb/loop.py",
+      "accessCount": 92,
+      "lastAccessed": 1777984721325,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/repl.py",
+      "accessCount": 88,
+      "lastAccessed": 1777985408886,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb",
+      "accessCount": 42,
+      "lastAccessed": 1777960477007,
+      "type": "directory"
+    },
+    {
+      "path": "src/ccb/config.py",
+      "accessCount": 36,
+      "lastAccessed": 1777985997545,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/select_ui.py",
+      "accessCount": 27,
+      "lastAccessed": 1777984021514,
+      "type": "directory"
+    },
+    {
+      "path": "src/ccb/cli.py",
+      "accessCount": 25,
+      "lastAccessed": 1777986525458,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/api/anthropic_provider.py",
+      "accessCount": 17,
+      "lastAccessed": 1777917773682,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/api/base.py",
+      "accessCount": 13,
+      "lastAccessed": 1777942958848,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/api/openai_provider.py",
+      "accessCount": 13,
+      "lastAccessed": 1777968796380,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/api/router.py",
+      "accessCount": 12,
+      "lastAccessed": 1777969071454,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/tools/base.py",
+      "accessCount": 12,
+      "lastAccessed": 1777986135071,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/session.py",
+      "accessCount": 11,
+      "lastAccessed": 1777942959190,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/plugins.py",
+      "accessCount": 11,
+      "lastAccessed": 1777960471036,
+      "type": "directory"
+    },
+    {
+      "path": "",
+      "accessCount": 10,
+      "lastAccessed": 1777946910177,
+      "type": "directory"
+    },
+    {
+      "path": "src/ccb/agent_defs.py",
+      "accessCount": 10,
+      "lastAccessed": 1777960469171,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/prompts.py",
+      "accessCount": 9,
+      "lastAccessed": 1777985173449,
+      "type": "file"
+    },
+    {
+      "path": "pyproject.toml",
+      "accessCount": 8,
+      "lastAccessed": 1777961288819,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/api/gemini_provider.py",
+      "accessCount": 8,
+      "lastAccessed": 1777985261131,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/api/vertex_provider.py",
+      "accessCount": 6,
+      "lastAccessed": 1777985165146,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/compaction.py",
+      "accessCount": 5,
+      "lastAccessed": 1777985027310,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/session_fork.py",
+      "accessCount": 4,
+      "lastAccessed": 1777960340287,
+      "type": "file"
+    },
+    {
+      "path": "tests",
+      "accessCount": 3,
+      "lastAccessed": 1777378294776,
+      "type": "directory"
+    },
+    {
+      "path": "src/ccb/coordinator.py",
+      "accessCount": 3,
+      "lastAccessed": 1777914913673,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/tools/tool_prompts.py",
+      "accessCount": 3,
+      "lastAccessed": 1777915229829,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/guardrails.py",
+      "accessCount": 3,
+      "lastAccessed": 1777918137134,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/tools/bash.py",
+      "accessCount": 3,
+      "lastAccessed": 1777942953716,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/mcp_approval.py",
+      "accessCount": 3,
+      "lastAccessed": 1777960323907,
+      "type": "file"
+    },
+    {
+      "path": "TODO.md",
+      "accessCount": 3,
+      "lastAccessed": 1777984384320,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/tools/tool_decorator.py",
+      "accessCount": 3,
+      "lastAccessed": 1777984589974,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/tools/file.py",
+      "accessCount": 3,
+      "lastAccessed": 1777985108269,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/tools/agent.py",
+      "accessCount": 2,
+      "lastAccessed": 1777914913622,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/sandbox_exec.py",
+      "accessCount": 2,
+      "lastAccessed": 1777914949803,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/lsp_client.py",
+      "accessCount": 2,
+      "lastAccessed": 1777916723655,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/api/bedrock_provider.py",
+      "accessCount": 2,
+      "lastAccessed": 1777917615040,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/tools/web.py",
+      "accessCount": 2,
+      "lastAccessed": 1777942953795,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/__main__.py",
+      "accessCount": 1,
+      "lastAccessed": 1777377756909,
+      "type": "file"
+    },
+    {
+      "path": "src",
+      "accessCount": 1,
+      "lastAccessed": 1777378090074,
+      "type": "directory"
+    },
+    {
+      "path": "src/ccb/api/__init__.py",
+      "accessCount": 1,
+      "lastAccessed": 1777378113264,
+      "type": "file"
+    },
+    {
+      "path": "tests/test_ultraplan.py",
+      "accessCount": 1,
+      "lastAccessed": 1777378305446,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/tools/todo.py",
+      "accessCount": 1,
+      "lastAccessed": 1777379324865,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/tools",
+      "accessCount": 1,
+      "lastAccessed": 1777454526927,
+      "type": "directory"
+    },
+    {
+      "path": "src/ccb/tools/ask_user.py",
+      "accessCount": 1,
+      "lastAccessed": 1777454531388,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/tools/glob_tool.py",
+      "accessCount": 1,
+      "lastAccessed": 1777454531456,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/api",
+      "accessCount": 1,
+      "lastAccessed": 1777454537195,
+      "type": "directory"
+    },
+    {
+      "path": "src/ccb/tools/code_interpreter.py",
+      "accessCount": 1,
+      "lastAccessed": 1777914970039,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/tools/image_gen.py",
+      "accessCount": 1,
+      "lastAccessed": 1777915027270,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/task_budget.py",
+      "accessCount": 1,
+      "lastAccessed": 1777916374065,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/voice_input.py",
+      "accessCount": 1,
+      "lastAccessed": 1777916717181,
+      "type": "file"
+    },
+    {
+      "path": "src/ccb/oauth/flow.py",
+      "accessCount": 1,
+      "lastAccessed": 1777916723707,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

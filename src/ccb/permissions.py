@@ -3,9 +3,9 @@
 Supports 5-level approval choices:
   allow_once      – allow this specific call, don't remember
   allow_session   – allow this tool/command for the rest of the session
-  allow_workspace – persist an allow rule to ~/.claude/approvals/<hash>.json
+  allow_workspace – persist an allow rule to ~/.ccb/approvals/<hash>.json
   deny_once       – deny this specific call
-  deny_workspace  – persist a deny rule to ~/.claude/approvals/<hash>.json
+  deny_workspace  – persist a deny rule to ~/.ccb/approvals/<hash>.json
 """
 from __future__ import annotations
 

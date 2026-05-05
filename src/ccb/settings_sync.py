@@ -26,7 +26,7 @@ class SettingsSync:
     """Sync settings via a shared directory or git repo."""
 
     def __init__(self) -> None:
-        self._config_dir = Path.home() / ".claude"
+        self._config_dir = Path.home() / ".ccb"
         self._sync_dir = self._config_dir / "sync"
         self._sync_file = self._config_dir / "sync_config.json"
         self._config: dict[str, Any] = {}

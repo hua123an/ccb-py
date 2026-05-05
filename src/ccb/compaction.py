@@ -184,7 +184,7 @@ async def _llm_summarize(
 
         from ccb.loop import run_turn
         from ccb.tools.base import ToolRegistry
-        result = await run_turn(
+        _ = await run_turn(
             provider=provider,
             session=temp_session,
             registry=ToolRegistry(),

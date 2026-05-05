@@ -6,7 +6,6 @@ background task scheduling.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import signal
 import sys
@@ -15,8 +14,8 @@ from pathlib import Path
 from typing import Any
 
 
-_PID_FILE = Path.home() / ".claude" / "ccb-daemon.pid"
-_LOG_FILE = Path.home() / ".claude" / "ccb-daemon.log"
+_PID_FILE = Path.home() / ".ccb" / "ccb-daemon.pid"
+_LOG_FILE = Path.home() / ".ccb" / "ccb-daemon.log"
 
 
 class Daemon:

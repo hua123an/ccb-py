@@ -10,7 +10,6 @@ Eligibility:
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import time
@@ -21,7 +20,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = 300  # 5 minutes
-CACHE_FILE = Path.home() / ".claude" / "policy-limits-cache.json"
+CACHE_FILE = Path.home() / ".ccb" / "policy-limits-cache.json"
 
 
 @dataclass

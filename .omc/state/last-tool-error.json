@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"python3 -m ruff check src/ccb/ 2>&1\",\"description\":\"Get linter error details\"}",
+  "error": "Exit code 1\nF401 [*] `ccb.api.base.Provider` imported but unused\n  --> src/ccb/cli.py:14:30\n   |\n13 | if TYPE_CHECKING:\n14 |     from ccb.api.base import Provider\n   |                              ^^^^^^^^\n15 |     from ccb.mcp.client import MCPManager\n16 |     from ccb.session import Session\n   |\nhelp: Remove unused import: `ccb.api.base.Provider`\n\nF401 [*] `ccb.tools.base.ToolRegistry` imported but unused\n  --> src/ccb/cli.py:17:32\n   |\n15 |     from ccb.mcp.client import MCPManager\n16 |     f...",
+  "timestamp": "2026-05-05T13:08:32.624Z",
+  "retry_count": 1
+}

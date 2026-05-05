@@ -7,7 +7,6 @@ for an active REPL and delegates accordingly.
 from __future__ import annotations
 
 import shutil
-import sys
 from io import StringIO
 from typing import Any
 
@@ -15,7 +14,6 @@ from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.syntax import Syntax
 from rich.text import Text
 from rich.theme import Theme
 
@@ -487,7 +485,7 @@ def print_user_message(text: str) -> None:
         return
     # Classic mode: blue left border via Rich columns
     console.print()
-    console.print(f"  [label.you]🧑 You[/label.you]")
+    console.print("  [label.you]🧑 You[/label.you]")
     for line in text.split("\n"):
         console.print(f"  [user]┃[/user] {line}")
 
@@ -506,7 +504,7 @@ def print_assistant_text(text: str) -> None:
     # Classic mode: orange left border + markdown (via Table for stable alignment)
     from rich.table import Table
     console.print()
-    console.print(f"  [label.claude]🤖 Claude[/label.claude]")
+    console.print("  [label.claude]🤖 Claude[/label.claude]")
     t = Table(show_header=False, show_edge=False, box=None, padding=0, expand=True)
     t.add_column(width=4, no_wrap=True)
     t.add_column(ratio=1)
@@ -768,7 +766,7 @@ class StreamPrinter:
             return
         # Classic mode: show label first, then live-update content
         console.print()
-        console.print(f"  [label.claude]🤖 Claude[/label.claude]")
+        console.print("  [label.claude]🤖 Claude[/label.claude]")
         self._live = Live(
             Text(""),
             console=console,

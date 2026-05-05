@@ -6,9 +6,7 @@ structure, with relevance scoring for context injection.
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -37,7 +35,7 @@ class MemoryEntry:
 
 
 def _default_memory_dir() -> Path:
-    return Path.home() / ".claude" / "memory"
+    return Path.home() / ".ccb" / "memory"
 
 
 def _team_memory_dir(project_dir: str = "") -> Path:

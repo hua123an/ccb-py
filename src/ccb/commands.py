@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import time
 from typing import Any, TYPE_CHECKING
@@ -102,7 +101,7 @@ async def handle_command(
 
             if not models:
                 console.print(f"  Current model: [bold]{session.model}[/bold]")
-                console.print(f"  [dim]Tip: /model <name> to switch[/dim]")
+                console.print("  [dim]Tip: /model <name> to switch[/dim]")
             else:
                 items = []
                 active_idx = 0
@@ -275,7 +274,7 @@ async def handle_command(
                 print_error(f"Unknown theme: {choice}. Use /theme list to see options.")
         else:
             console.print(f"[bold]Current theme:[/bold] {current}")
-            console.print(f"[dim]Use /theme list to see all, /theme <name> to switch.[/dim]")
+            console.print("[dim]Use /theme list to see all, /theme <name> to switch.[/dim]")
         return True
 
     # ── MCP ──
@@ -470,7 +469,7 @@ async def handle_command(
 
     # ── Permissions ──
     if command == "/permissions":
-        from ccb.permissions import set_bypass_all, _bypass_all, _session_approved
+        from ccb.permissions import set_bypass_all, _bypass_all
         if args == "bypass":
             set_bypass_all(True)
             print_info("Bypass mode ON - all tools auto-approved")
@@ -826,11 +825,11 @@ async def handle_command(
             print_error(f"Usage: {command} <message>")
         else:
             from pathlib import Path
-            fb_dir = Path.home() / ".claude" / "feedback"
+            fb_dir = Path.home() / ".ccb" / "feedback"
             fb_dir.mkdir(parents=True, exist_ok=True)
             fb_file = fb_dir / f"{int(time.time())}.txt"
             fb_file.write_text(f"{command}: {args}\nSession: {session.id}\nModel: {session.model}\n")
-            print_info(f"Feedback saved. Thank you!")
+            print_info("Feedback saved. Thank you!")
         return True
 
     # ── Login / Logout ──
@@ -944,7 +943,7 @@ async def handle_command(
             console.print("  [dim]No agent definitions found.[/dim]")
         console.print()
         console.print("  [dim]Use: /agents <name> to activate[/dim]")
-        console.print("  [dim]Define: ~/.claude/agents/<name>.yaml or .claude/agents/<name>.yaml[/dim]")
+        console.print("  [dim]Define: ~/.ccb/agents/<name>.yaml or .claude/agents/<name>.yaml[/dim]")
 
         # Also show running sub-agents from coordinator
         from ccb.coordinator import get_coordinator
@@ -961,7 +960,7 @@ async def handle_command(
     # ── Peers / Pipes ──
     if command in ("/peers", "/pipes"):
         import os as _os
-        from ccb.pipe_ipc import PipeIPC, _PIPE_DIR
+        from ccb.pipe_ipc import PipeIPC
         from ccb.peer_discovery import PeerDiscovery
         from ccb.pipes_panel import show_pipes_panel
 
@@ -987,7 +986,7 @@ async def handle_command(
         else:
             # Fall back to local pipe scan
             ipc = PipeIPC()
-            peer_ids = ipc.discover_local_peers()
+            _ = ipc.discover_local_peers()
             peers = ipc.list_peers()
             show_pipes_panel(ipc.instance_id, peers, title="Local Pipes")
             if not peers:
@@ -1006,7 +1005,7 @@ async def handle_command(
     if command == "/snapshot":
         from ccb.workspace_snapshot import get_snapshot_manager
         mgr = get_snapshot_manager()
-        
+
         if args == "list":
             snaps = mgr.list_all()
             if not snaps:
@@ -1019,15 +1018,20 @@ async def handle_command(
                     console.print(f"  • {s.id[:20]}… {time_str} {s.git_branch}:{s.git_commit[:8]}{dirty}")
                     console.print(f"    {s.description[:60]}")
             return True
-        
-        if args == "delete" and arg:
-            if mgr.delete(arg.strip()):
-                print_info(f"Deleted snapshot: {arg.strip()[:20]}...")
+
+        if args == "delete":
+            arg = args.split(maxsplit=1)[1] if len(args.split()) > 1 else ""
+            if arg:
+                if mgr.delete(arg.strip()):
+                    print_info(f"Deleted snapshot: {arg.strip()[:20]}...")
+                else:
+                    print_error(f"Snapshot not found: {arg.strip()}")
             else:
-                print_error(f"Snapshot not found: {arg.strip()}")
+                print_error("Usage: /snapshot delete <id>")
             return True
-        
+
         # Create new snapshot
+        arg = args  # args is the description for new snapshot
         desc = arg if arg else ""
         snap = mgr.create(
             cwd=cwd,
@@ -1046,7 +1050,7 @@ async def handle_command(
     if command == "/restore":
         from ccb.workspace_snapshot import get_snapshot_manager
         mgr = get_snapshot_manager()
-        
+
         if not args:
             # List available snapshots
             snaps = mgr.list_all()
@@ -1061,7 +1065,7 @@ async def handle_command(
                     console.print(f"    {s.git_branch}:{s.git_commit[:8]}{dirty} — {s.description[:50]}")
                 console.print("\n  [dim]Usage: /restore <snapshot_id>[/dim]")
             return True
-        
+
         # Load and restore
         snap_id = args.strip()
         snap = mgr.load(snap_id)
@@ -1071,20 +1075,20 @@ async def handle_command(
                 if s.id.startswith(snap_id):
                     snap = s
                     break
-        
+
         if not snap:
             print_error(f"Snapshot not found: {snap_id}")
             return True
-        
+
         console.print(f"[bold]Restoring snapshot:[/bold] {snap.id[:25]}...")
-        
+
         # Show comparison first
         changes = mgr.compare(snap, cwd)
         if changes.get("git_commit_changed"):
             console.print(f"  Git: {changes['current_commit']} → {changes['snapshot_commit']}")
         if changes.get("deps_changed"):
             console.print(f"  Dependencies changed: {', '.join(changes['deps_changed'])}")
-        
+
         # Restore git state
         result = mgr.restore_git(snap, cwd)
         if result["success"]:
@@ -1093,12 +1097,12 @@ async def handle_command(
                 console.print(f"  • {step}")
         else:
             print_error(f"Restore failed: {result.get('error', 'unknown error')}")
-        
+
         # Offer to resume session if available
         if snap.session_id and snap.session_id != session.id:
             console.print(f"\n  [dim]Session context: {snap.session_messages_count} messages in snapshot[/dim]")
             console.print(f"  [dim]Use /resume {snap.session_id[:8]} to restore session[/dim]")
-        
+
         return True
 
     # ── Rewind ──
@@ -1110,7 +1114,7 @@ async def handle_command(
             except ValueError:
                 pass
         if len(session.messages) >= n:
-            removed = session.messages[-n:]
+            _ = session.messages[-n:]  # discarded messages
             session.messages = session.messages[:-n]
             print_info(f"Rewound {n} messages (now {len(session.messages)} remain)")
         else:
@@ -1177,7 +1181,7 @@ async def handle_command(
         if args == "status":
             # Show detailed status
             info = sandbox.info()
-            console.print(f"[bold]Sandbox Status[/bold]")
+            console.print("[bold]Sandbox Status[/bold]")
             console.print(f"  Backend: {info['backend']}")
             console.print(f"  Available: {'yes' if info['available'] else 'no'}")
             console.print(f"  Enabled: {'yes' if info['enabled'] else 'no'}")
@@ -1189,7 +1193,7 @@ async def handle_command(
 
         if args == "on":
             if not sandbox.available:
-                print_error(f"No sandbox backend available. Install Docker, or use macOS sandbox-exec.")
+                print_error("No sandbox backend available. Install Docker, or use macOS sandbox-exec.")
                 return True
             sandbox.enable()
             state["sandbox"] = True
@@ -1201,10 +1205,12 @@ async def handle_command(
             global_state.set("sandbox_mode", False)
             print_info("Sandbox mode: OFF")
         elif args == "allow":
+            arg = args.split(maxsplit=1)[1] if len(args.split()) > 1 else ""
             path = arg.strip() if arg else cwd
             sandbox.allow_path(path)
             print_info(f"Allowed path: {path}")
         elif args == "image":
+            arg = args.split(maxsplit=1)[1] if len(args.split()) > 1 else ""
             if arg:
                 sandbox.set_docker_image(arg)
                 print_info(f"Docker image: {arg}")
@@ -1220,7 +1226,7 @@ async def handle_command(
                     sandbox.enable()
                     print_info(f"Sandbox mode: ON ({sandbox.backend_name})")
                 else:
-                    print_error(f"Cannot enable: no backend available (docker/macos-sandbox/firejail)")
+                    print_error("Cannot enable: no backend available (docker/macos-sandbox/firejail)")
                     state["sandbox"] = False
                     global_state.set("sandbox_mode", False)
             else:
@@ -1314,7 +1320,7 @@ async def handle_command(
         return True
     if command == "/reload-plugins":
         from pathlib import Path
-        plugin_dir = Path.home() / ".claude" / "plugins"
+        plugin_dir = Path.home() / ".ccb" / "plugins"
         count = len(list(plugin_dir.iterdir())) if plugin_dir.exists() else 0
         print_info(f"Reloaded {count} plugin(s).")
         return True
@@ -1467,7 +1473,7 @@ async def handle_command(
 
     # ── Commit (with git integration) ──
     if command == "/commit":
-        from ccb.git_ops import generate_commit_message_prompt, diff_stat, stage, commit, git_available
+        from ccb.git_ops import generate_commit_message_prompt, diff_stat, stage, git_available
         if not git_available(cwd):
             print_error("Not in a git repository")
             return True
@@ -1508,7 +1514,7 @@ async def handle_command(
 
     # ── Branch ──
     if command == "/branch":
-        from ccb.git_ops import branches, checkout, create_branch, current_branch, git_available
+        from ccb.git_ops import branches, checkout, create_branch, git_available
         if not git_available(cwd):
             print_error("Not in a git repository")
             return True
@@ -1535,7 +1541,7 @@ async def handle_command(
 
     # ── Undo / Redo (git-based) ──
     if command == "/undo":
-        from ccb.git_ops import undo_last_commit, stash_push, git_available
+        from ccb.git_ops import undo_last_commit, git_available
         if not git_available(cwd):
             print_error("Not in a git repository")
             return True
@@ -1634,7 +1640,8 @@ async def handle_command(
 
     # ── BTW (terminal setup) ──
     if command == "/btw":
-        import os, platform
+        import os
+        import platform
         info = {
             "shell": os.environ.get("SHELL", "unknown"),
             "term": os.environ.get("TERM", "unknown"),
@@ -1790,7 +1797,9 @@ async def handle_command(
 
     # ── Teleport ──
     if command == "/teleport":
-        import base64, json as _json, hashlib
+        import base64
+        import json as _json
+        import hashlib
         if args and args.strip().startswith("import "):
             code = args.strip()[7:]
             try:
@@ -1813,7 +1822,7 @@ async def handle_command(
                 console.print(f"  Code: {code}")
             else:
                 console.print(f"  Code: {code[:80]}...")
-                console.print(f"  [dim](Full code copied — use /export to save to file)[/dim]")
+                console.print("  [dim](Full code copied — use /export to save to file)[/dim]")
             console.print("")
             console.print("  To import on another device: /teleport import <code>")
         return True
@@ -1904,13 +1913,11 @@ async def handle_command(
 
     # ── Pipe status ──
     if command == "/pipe-status":
-        from ccb.query_engine import PipeChain
         print_info("Pipe mode: use 'ccb -p \"prompt\"' for non-interactive queries.")
         return True
 
     # ── Pipes ──
     if command == "/pipes":
-        from ccb.query_engine import PipeChain
         console.print("[bold]Pipe Chains[/bold]")
         console.print("  Usage: echo 'code' | ccb -p 'review this'")
         console.print("  Chain: ccb -p 'step1' | ccb -p 'step2'")
@@ -1953,7 +1960,7 @@ async def handle_command(
     if command == "/ctx_viz":
         from ccb.api.base import Role
         total_chars = sum(len(m.content or "") for m in session.messages)
-        console.print(f"[bold]Context visualization:[/bold]")
+        console.print("[bold]Context visualization:[/bold]")
         console.print(f"  Messages: {len(session.messages)}")
         console.print(f"  Total chars: {total_chars:,}")
         console.print(f"  Est. tokens: ~{total_chars // 4:,}")
@@ -1990,7 +1997,6 @@ async def handle_command(
         state.pop("_cached_tools", None)
         cleared += 1
         # Clear any in-memory caches
-        import importlib
         for mod_name in ["ccb.prompts", "ccb.skills", "ccb.config"]:
             mod = sys.modules.get(mod_name)
             if mod and hasattr(mod, "_cache"):
@@ -2009,7 +2015,7 @@ async def handle_command(
     if command == "/claim-main":
         import os
         from pathlib import Path
-        pid_file = Path.home() / ".claude" / "ccb-main.pid"
+        pid_file = Path.home() / ".ccb" / "ccb-main.pid"
         pid_file.parent.mkdir(parents=True, exist_ok=True)
         # Check if another main process exists
         if pid_file.exists():
@@ -2053,7 +2059,7 @@ async def handle_command(
     if command == "/extra-usage":
         from ccb.analytics_tracker import get_tracker
         stats = get_tracker().get_historical_stats(days=30)
-        console.print(f"[bold]Usage (last 30 days):[/bold]")
+        console.print("[bold]Usage (last 30 days):[/bold]")
         console.print(f"  Sessions: {stats.get('sessions', 0)}")
         console.print(f"  Messages: {stats.get('messages', 0)}")
         console.print(f"  Input tokens: {stats.get('input_tokens', 0):,}")
@@ -2445,7 +2451,8 @@ async def _handle_plugin_command(args: str) -> None:
         import traceback
         print_error(f"/plugin {sub} failed: {e}")
         try:
-            Path.home().joinpath(".claude", "ccb-debug.log").open("a").write(
+            import pathlib
+            pathlib.Path.home().joinpath(".ccb", "ccb-debug.log").open("a").write(
                 traceback.format_exc() + "\n"
             )
         except Exception:
@@ -3035,7 +3042,7 @@ async def _account_add(provider: Provider, session: Session) -> Provider | None:
       3. Ask for API key (masked)
       4. Probe {baseUrl}/models → show discovered models
       5. Pick a default model
-      6. Save to ~/.claude/accounts.json and optionally switch to it
+      6. Save to ~/.ccb/accounts.json and optionally switch to it
     """
     import json
     from ccb.config import (
@@ -3089,7 +3096,7 @@ async def _account_add(provider: Provider, session: Session) -> Provider | None:
 
     # ── Step 3: API key (masked) ─────────────────────────────────────
     api_key = await ask_text(
-        "API key (will be stored in ~/.claude/accounts.json)",
+        "API key (will be stored in ~/.ccb/accounts.json)",
         placeholder="sk-...",
         mask=True,
         title="Add Account — Step 3/5",
@@ -3174,7 +3181,7 @@ async def _account_add(provider: Provider, session: Session) -> Provider | None:
 
 
 async def _account_remove(name: str) -> None:
-    """Remove an account from ~/.claude/accounts.json."""
+    """Remove an account from ~/.ccb/accounts.json."""
     import json
     from ccb.config import accounts_path, load_accounts
     from ccb.select_ui import select_one
@@ -3246,7 +3253,6 @@ def _account_list() -> None:
 async def _doctor(cwd: str, registry: ToolRegistry, mcp_manager: MCPManager | None) -> None:
     """Run diagnostics."""
     import shutil
-    import sys
     from pathlib import Path
     from ccb.config import get_api_key, get_base_url, get_model, get_provider, get_permission_mode
 
@@ -3308,8 +3314,8 @@ async def _doctor(cwd: str, registry: ToolRegistry, mcp_manager: MCPManager | No
     console.print("  [bold]Config Files[/bold]")
     from ccb.config import claude_dir
     config_files = [
-        (Path.home() / ".claude.json", "~/.claude.json"),
-        (Path(claude_dir()) / "settings.json", "~/.claude/settings.json"),
+        (Path.home() / ".ccb.json", "~/.ccb.json"),
+        (Path(claude_dir()) / "settings.json", "~/.ccb/settings.json"),
         (Path(cwd) / "CLAUDE.md", "CLAUDE.md (project)"),
         (Path.home() / "CLAUDE.md", "CLAUDE.md (home)"),
     ]
@@ -3406,7 +3412,7 @@ def _copy_last_reply(session: Session) -> None:
         if msg.role == Role.ASSISTANT and msg.content:
             try:
                 import subprocess
-                proc = subprocess.run(
+                subprocess.run(
                     ["pbcopy"], input=msg.content.encode(), check=True,
                     capture_output=True,
                 )
@@ -3415,7 +3421,7 @@ def _copy_last_reply(session: Session) -> None:
                 # Fallback for non-macOS
                 try:
                     import subprocess
-                    proc = subprocess.run(
+                    subprocess.run(
                         ["xclip", "-selection", "clipboard"],
                         input=msg.content.encode(), check=True, capture_output=True,
                     )
@@ -3492,12 +3498,12 @@ def _export_session(session: Session, args: str) -> None:
     elif fmt == "md":
         lines = [
             f"# Conversation {session.id[:8]}",
-            f"",
+            "",
             f"- **Model**: {session.model}",
             f"- **Created**: {created}",
             f"- **Tokens**: {session.total_input_tokens:,} in / {session.total_output_tokens:,} out",
             f"- **Est. cost**: {format_cost(cost)}",
-            f"",
+            "",
             "---",
             "",
         ]
@@ -3702,7 +3708,7 @@ async def _buddy(args: str, state: dict[str, Any], cwd: str) -> None:
         "mushroom": ("🍄", "Spore", "Grows on you. Spreads wisdom in the dark."),
     }
 
-    buddy_file = Path.home() / ".claude" / "buddy.json"
+    buddy_file = Path.home() / ".ccb" / "buddy.json"
 
     def _load_buddy() -> dict | None:
         if buddy_file.exists():
@@ -3757,8 +3763,8 @@ async def _buddy(args: str, state: dict[str, Any], cwd: str) -> None:
             species_key = existing.get("species", "duck")
             emoji, _, _ = SPECIES.get(species_key, ("🦆", "", ""))
             console.print(f"\n  {emoji} [bold]{existing['name']}[/bold] the {species_key} is here!")
-            console.print(f"  Use: /buddy pet | /buddy status | /buddy off")
-            console.print(f"  Or:  /buddy hatch  to get a new companion\n")
+            console.print("  Use: /buddy pet | /buddy status | /buddy off")
+            console.print("  Or:  /buddy hatch  to get a new companion\n")
             state["buddy"] = existing
             return
 
@@ -3784,7 +3790,7 @@ async def _buddy(args: str, state: dict[str, Any], cwd: str) -> None:
 
     console.print(f"\n  🥚 → {emoji} [bold]{name}[/bold] the {species_key} hatched!")
     console.print(f"  {personality}")
-    console.print(f"\n  Commands: /buddy pet | /buddy status | /buddy off\n")
+    console.print("\n  Commands: /buddy pet | /buddy status | /buddy off\n")
 
 
 def _change_theme(args: str) -> None:

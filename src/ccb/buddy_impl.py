@@ -146,7 +146,7 @@ class Buddy:
 
     def __init__(self) -> None:
         self._state = BuddyState()
-        self._config_path = Path.home() / ".claude" / "buddy.json"
+        self._config_path = Path.home() / ".ccb" / "buddy.json"
         self._load()
 
     def _load(self) -> None:

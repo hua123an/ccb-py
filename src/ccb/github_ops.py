@@ -191,7 +191,7 @@ def issue_list(cwd: str | None = None, state: str = "open", limit: int = 20) -> 
             title=i.get("title", ""),
             state=i.get("state", ""),
             author=i.get("author", {}).get("login", ""),
-            labels=[l.get("name", "") for l in i.get("labels", [])],
+            labels=[lab.get("name", "") for lab in i.get("labels", [])],
             url=i.get("url", ""),
             created_at=i.get("createdAt", ""),
         )
@@ -215,7 +215,7 @@ def issue_view(number: int, cwd: str | None = None) -> Issue | None:
         body=d.get("body", ""),
         state=d.get("state", ""),
         author=d.get("author", {}).get("login", ""),
-        labels=[l.get("name", "") for l in d.get("labels", [])],
+        labels=[lab.get("name", "") for lab in d.get("labels", [])],
         url=d.get("url", ""),
         created_at=d.get("createdAt", ""),
     )

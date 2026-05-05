@@ -7,11 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 
 @dataclass
@@ -47,7 +45,7 @@ class RemoteManager:
     def __init__(self) -> None:
         self._hosts: dict[str, RemoteHost] = {}
         self._active: str | None = None
-        self._config_file = Path.home() / ".claude" / "remote_hosts.json"
+        self._config_file = Path.home() / ".ccb" / "remote_hosts.json"
         self._load_config()
 
     def _load_config(self) -> None:

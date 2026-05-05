@@ -119,7 +119,6 @@ class VertexProvider(Provider):
             response = await asyncio.wait_for(generate(), timeout=180)
 
             current_tool: dict[str, Any] | None = None
-            input_json_buf = ""
 
             async for chunk in response:
                 # Handle text
@@ -156,7 +155,6 @@ class VertexProvider(Provider):
                             )
                             yield StreamEvent(type="tool_use_end", tool_call=tc)
                             current_tool = None
-                            input_json_buf = ""
 
                 # Check for usage
                 if hasattr(chunk, "usage_metadata"):

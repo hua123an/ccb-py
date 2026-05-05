@@ -24,7 +24,7 @@ def load_hooks(cwd: str) -> dict[str, list[dict[str, Any]]]:
     """Load hooks from user, project, and plugin sources.
 
     Merge order (later wins for duplicates, but we collect all):
-      1. ~/.claude/hooks.json                      — global user
+      1. ~/.ccb/hooks.json                      — global user
       2. <cwd>/.claude/hooks.json                  — project
       3. Each installed+enabled plugin's hooks/*.json
     """

@@ -1,4 +1,4 @@
-"""Configuration management. Reads from env vars, ~/.claude.json, and ~/.claude/settings.json."""
+"""Configuration management. Reads from env vars, ~/.ccb.json, and ~/.ccb/settings.json."""
 from __future__ import annotations
 
 import json
@@ -10,17 +10,29 @@ _global_config: dict[str, Any] = {}
 _project_configs: dict[str, dict[str, Any]] = {}
 _active_account: dict[str, Any] | None = None
 
+# ccb-py uses its own config directory to avoid conflicts with Claude Code.
+_CONFIG_DIR_NAME = ".ccb"
 
-def claude_dir() -> Path:
-    return Path.home() / ".claude"
+
+def ccb_dir() -> Path:
+    """ccb-py's own config directory (~/.ccb)."""
+    return Path.home() / _CONFIG_DIR_NAME
 
 
-def claude_json_path() -> Path:
-    return Path.home() / ".claude.json"
+# Backward-compatible alias
+claude_dir = ccb_dir
+
+
+def ccb_json_path() -> Path:
+    return Path.home() / f"{_CONFIG_DIR_NAME}.json"
+
+
+# Backward-compatible alias
+claude_json_path = ccb_json_path
 
 
 def settings_path() -> Path:
-    return claude_dir() / "settings.json"
+    return ccb_dir() / "settings.json"
 
 
 def project_config_key(cwd: str) -> str:
@@ -28,7 +40,7 @@ def project_config_key(cwd: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Global config (~/.claude.json)
+# Global config (~/.ccb.json)
 # ---------------------------------------------------------------------------
 def load_global_config() -> dict[str, Any]:
     global _global_config
@@ -54,7 +66,7 @@ def save_global_config(cfg: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Settings (~/.claude/settings.json)
+# Settings (~/.ccb/settings.json)
 # ---------------------------------------------------------------------------
 def load_settings() -> dict[str, Any]:
     p = settings_path()
@@ -77,7 +89,7 @@ def save_settings(settings: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Project config (~/.claude.json -> projects.<key>)
+# Project config (~/.ccb.json -> projects.<key>)
 # ---------------------------------------------------------------------------
 def get_project_config(cwd: str) -> dict[str, Any]:
     cfg = get_global_config()
@@ -94,7 +106,7 @@ def save_project_config(cwd: str, project_cfg: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Accounts (~/.claude/accounts.json)
+# Accounts (~/.ccb/accounts.json)
 # ---------------------------------------------------------------------------
 def accounts_path() -> Path:
     return claude_dir() / "accounts.json"
@@ -154,7 +166,7 @@ def switch_account(name: str, model: str | None = None) -> bool:
 # ---------------------------------------------------------------------------
 def get_api_key() -> str:
     """Resolve API key: env var > active account > settings > empty."""
-    for env_key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+    for env_key in ("ANTHROPIC_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "OPENAI_API_KEY"):
         val = os.environ.get(env_key, "")
         if val:
             return val
@@ -163,6 +175,23 @@ def get_api_key() -> str:
         return acct.get("apiKey", "")
     settings = load_settings()
     return settings.get("apiKey", "")
+
+
+def get_api_key_hint() -> str:
+    """Get helpful hint for missing API key."""
+    hints = []
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        hints.append("ANTHROPIC_API_KEY is set but not working")
+    elif os.environ.get("OPENAI_API_KEY"):
+        hints.append("OPENAI_API_KEY is set but not working")
+    elif os.environ.get("MISTRAL_API_KEY"):
+        hints.append("MISTRAL_API_KEY is set but not working")
+    elif os.environ.get("GROQ_API_KEY"):
+        hints.append("GROQ_API_KEY is set but not working")
+    else:
+        hints.append("Run 'ccb-py' and use /account add to configure")
+        hints.append("Or set ANTHROPIC_API_KEY environment variable")
+    return "; ".join(hints)
 
 
 def get_model() -> str:
@@ -187,6 +216,10 @@ def get_base_url() -> str | None:
         return url
     if url := os.environ.get("OPENAI_BASE_URL"):
         return url
+    if os.environ.get("MISTRAL_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
+        return "https://api.mistral.ai/v1"
+    if os.environ.get("GROQ_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
+        return "https://api.groq.com/openai/v1"
     acct = get_active_account()
     if acct:
         return acct.get("baseUrl")
@@ -212,6 +245,10 @@ def get_provider() -> str:
         return "bedrock"
     if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
         return "vertex"
+    if os.environ.get("MISTRAL_API_KEY"):
+        return "openai"  # Mistral is OpenAI-compatible
+    if os.environ.get("GROQ_API_KEY"):
+        return "openai"  # Groq is OpenAI-compatible
     if os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_BASE_URL"):
         return "openai"
 
@@ -219,6 +256,10 @@ def get_provider() -> str:
     model = get_model()
     if model.startswith(("gpt-", "o1-", "o3-", "o4-")):
         return "openai"
+    if model.startswith(("mistral", "codestral", "pixtral", "magistral")):
+        return "openai"  # Mistral is OpenAI-compatible
+    if model.startswith(("llama", "mixtral", "gemma")):
+        return "openai"  # Groq models
     return "anthropic"
 
 

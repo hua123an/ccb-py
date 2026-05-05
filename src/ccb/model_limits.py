@@ -5,7 +5,7 @@ Where providers publish a range (e.g. "up to 1M with beta header"), we use
 the default enabled value, not the maximum opt-in value.
 
 Lookup order in ``get_context_limit``:
-  1. User override from ``~/.claude/settings.json`` → ``modelContextLimits``
+  1. User override from ``~/.ccb/settings.json`` → ``modelContextLimits``
      (per-account override in ``accounts.json`` → ``contextLimit`` also works)
   2. Exact match in ``MODEL_CONTEXT_LIMITS``
   3. Longest matching prefix in ``_PREFIX_FALLBACKS``
@@ -175,13 +175,13 @@ _PREFIX_FALLBACKS: list[tuple[str, int]] = [
 
 
 def _load_user_overrides() -> dict[str, int]:
-    """Read per-model limit overrides from ~/.claude/settings.json.
+    """Read per-model limit overrides from ~/.ccb/settings.json.
 
     Schema:
         {"modelContextLimits": {"gpt-5.4-2026-03-05": 400000}}
     """
     try:
-        path = Path.home() / ".claude" / "settings.json"
+        path = Path.home() / ".ccb" / "settings.json"
         if not path.exists():
             return {}
         data = json.loads(path.read_text())

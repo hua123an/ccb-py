@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +48,7 @@ class MCPAuthManager:
 
     def __init__(self) -> None:
         self._auths: dict[str, MCPAuthInfo] = {}
-        self._config_path = Path.home() / ".claude" / "mcp_auth.json"
+        self._config_path = Path.home() / ".ccb" / "mcp_auth.json"
         self._load()
 
     def _load(self) -> None:

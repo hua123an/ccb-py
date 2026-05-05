@@ -84,7 +84,7 @@ def save_fork(
 
     Returns the path where the fork was saved.
     """
-    session_dir = Path.home() / ".claude" / "sessions" / "forks"
+    session_dir = Path.home() / ".ccb" / "sessions" / "forks"
     session_dir.mkdir(parents=True, exist_ok=True)
 
     if not fork_name:
@@ -107,7 +107,7 @@ def save_fork(
 
 def load_fork(fork_name: str) -> Session | None:
     """Load a forked session from disk."""
-    fork_path = Path.home() / ".claude" / "sessions" / "forks" / f"{fork_name}.json"
+    fork_path = Path.home() / ".ccb" / "sessions" / "forks" / f"{fork_name}.json"
     if not fork_path.exists():
         return None
 
@@ -127,7 +127,7 @@ def load_fork(fork_name: str) -> Session | None:
 
 def list_forks() -> list[dict[str, Any]]:
     """List all saved forks."""
-    forks_dir = Path.home() / ".claude" / "sessions" / "forks"
+    forks_dir = Path.home() / ".ccb" / "sessions" / "forks"
     if not forks_dir.exists():
         return []
 

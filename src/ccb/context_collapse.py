@@ -122,7 +122,7 @@ def _summarize_message(msg: Any) -> str:
 def _build_collapsed_summary(archived: list[Any]) -> str:
     """Build a multi-line collapsed summary."""
     lines = [_summarize_message(m) for m in archived]
-    lines = [l for l in lines if l][:SUMMARY_LINE_LIMIT]
+    lines = [line for line in lines if line][:SUMMARY_LINE_LIMIT]
     extra = max(len(archived) - len(lines), 0)
     if extra > 0:
         lines.append(f"... {extra} more earlier messages")

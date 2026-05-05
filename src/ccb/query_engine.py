@@ -6,9 +6,8 @@ Also handles ``/pipes`` for multi-step pipe chains.
 """
 from __future__ import annotations
 
-import asyncio
 import sys
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
 
 async def run_query(

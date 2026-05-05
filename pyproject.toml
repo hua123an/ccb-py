@@ -45,6 +45,7 @@ Repository = "https://github.com/hua123an/ccb-py"
 Issues = "https://github.com/hua123an/ccb-py/issues"
 
 [project.scripts]
+ccb = "ccb.cli:main"
 ccb-py = "ccb.cli:main"
 
 [build-system]

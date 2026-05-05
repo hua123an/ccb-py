@@ -10,7 +10,7 @@ Inspired by OpenAI Agents SDK MCP approval system.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -133,7 +133,7 @@ class McpApprovalManager:
 
     def save(self, path: Path | None = None) -> None:
         """Save rules to disk."""
-        p = path or (Path.home() / ".claude" / "mcp_approval.json")
+        p = path or (Path.home() / ".ccb" / "mcp_approval.json")
         p.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "default_mode": self._default_mode.value,
@@ -147,7 +147,7 @@ class McpApprovalManager:
 
     def load(self, path: Path | None = None) -> None:
         """Load rules from disk."""
-        p = path or (Path.home() / ".claude" / "mcp_approval.json")
+        p = path or (Path.home() / ".ccb" / "mcp_approval.json")
         if not p.exists():
             return
         try:

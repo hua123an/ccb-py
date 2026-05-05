@@ -7,13 +7,12 @@ import sys
 import time
 from typing import Any
 
-from ccb.api.base import Message, Provider, Role, StreamEvent, ToolCall
+from ccb.api.base import Message, Provider, Role, ToolCall
 from ccb.api.base import ToolResult as APIToolResult
 from ccb.cost_tracker import get_cost_state
 from ccb.display import (
     StreamPrinter,
     ask_permission,
-    console,
     print_error,
     print_info,
     print_tool_call,
@@ -536,7 +535,7 @@ async def execute_tool_calls(
             from ccb.sentry_integration import tool_span as _sentry_tool_span
             from ccb.langfuse_monitor import get_monitor as _get_lf_mon
             _lf_mon = _get_lf_mon()
-            _lf_sid = _lf_mon.span_start(_trace_id, f"tool:{tc.name}", input=tc.input)
+            _lf_sid = _lf_mon.span_start(f"tool:{tc.name}", input=tc.input)
             with _sentry_tool_span(tc.name, tc.input):
                 tool_result = await tool.execute(tc.input, cwd)
             _lf_mon.span_end(_lf_sid, output=tool_result.output[:500])

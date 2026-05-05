@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
 
 
 @dataclass
@@ -45,7 +44,7 @@ class SkillSearchEngine:
         except Exception:
             pass
 
-        # Custom skills from ~/.claude/skills/
+        # Custom skills from ~/.ccb/skills/
         try:
             from ccb.skills import discover_custom_skills
             for skill in discover_custom_skills():
@@ -98,7 +97,6 @@ class SkillSearchEngine:
 
         for skill in self._skills:
             score = 0.0
-            searchable = f"{skill.name} {skill.description} {' '.join(skill.tags)}".lower()
 
             # Exact name match
             if query_lower == skill.name.lower():

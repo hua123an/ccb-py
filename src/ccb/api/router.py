@@ -20,6 +20,8 @@ OPENAI_RELAYS = {
     "b.ai",
     "api.openai.com",
     "openai.com",
+    "api.mistral.ai",
+    "api.groq.com",
     # Add more as needed
 }
 

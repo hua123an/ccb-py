@@ -4,7 +4,6 @@ Uses google-genai SDK when available, falls back to OpenAI-compatible endpoint.
 """
 from __future__ import annotations
 
-import os
 from typing import Any, AsyncIterator
 
 from ccb.api.base import Message, Provider, Role, StreamEvent, ToolCall
@@ -263,7 +262,6 @@ class GeminiProvider(Provider):
 
                             if delta.get("tool_calls"):
                                 for tc_delta in delta["tool_calls"]:
-                                    idx = tc_delta.get("index", 0)
                                     fn = tc_delta.get("function", {})
                                     if tc_delta.get("id"):
                                         current_tool = {"id": tc_delta["id"], "name": fn.get("name", ""), "args": ""}

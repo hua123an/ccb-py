@@ -128,7 +128,7 @@ def tool(
     return decorator
 
 
-def register_decorated_tools(registry: "ToolRegistry", module: Any) -> int:
+def register_decorated_tools(registry, module: Any) -> int:
     """Scan a module for @tool-decorated functions and register them.
 
     Returns the number of tools registered.

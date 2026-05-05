@@ -15,7 +15,7 @@ import os
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
 
@@ -57,7 +57,7 @@ class TokenStore:
 
     def __init__(self) -> None:
         self._backend = self._detect_backend()
-        self._fallback_dir = Path.home() / ".claude" / "tokens"
+        self._fallback_dir = Path.home() / ".ccb" / "tokens"
         self._encryption_key: bytes | None = None
 
     @staticmethod
@@ -217,7 +217,7 @@ class TokenStore:
 
     def _wincred_retrieve(self, key: str) -> str | None:
         target = f"{SERVICE_NAME}:{key}"
-        r = subprocess.run(
+        subprocess.run(
             ["cmdkey", f"/list:{target}"],
             capture_output=True, text=True,
         )
@@ -227,11 +227,11 @@ class TokenStore:
 
     def _wincred_delete(self, key: str) -> bool:
         target = f"{SERVICE_NAME}:{key}"
-        r = subprocess.run(
+        result = subprocess.run(
             ["cmdkey", f"/delete:{target}"],
             capture_output=True,
         )
-        return r.returncode == 0
+        return result.returncode == 0
 
     # ── Encrypted file fallback ──
 

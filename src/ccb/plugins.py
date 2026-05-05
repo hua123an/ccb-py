@@ -10,7 +10,7 @@ We support the three most common source types — which is what 99% of
 
 Storage layout (matches the official client so its marketplaces Just Work):
 
-    ~/.claude/plugins/
+    ~/.ccb/plugins/
     ├── known_marketplaces.json          # { name: {source, installLocation} }
     ├── installed_plugins.json           # { "plugin@marketplace": {path, enabled} }
     └── marketplaces/
@@ -53,7 +53,7 @@ from typing import Any
 # ── Paths ────────────────────────────────────────────────────────────
 
 def _plugins_dir() -> Path:
-    d = Path.home() / ".claude" / "plugins"
+    d = Path.home() / ".ccb" / "plugins"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -633,7 +633,7 @@ def _resolve_plugin(name: str, marketplace: str | None) -> tuple[dict[str, Any],
 
 
 def _materialize_plugin(entry: dict[str, Any], marketplace_name: str) -> str:
-    """Download/copy a plugin's files into ~/.claude/plugins/<name>/.
+    """Download/copy a plugin's files into ~/.ccb/plugins/<name>/.
 
     Returns the filesystem path where the plugin lives.
     """

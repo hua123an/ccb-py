@@ -1,7 +1,7 @@
 """Session memory system for ccb-py.
 
 Provides cross-session memory extraction, storage, and retrieval.
-Memories are stored in ~/.claude/memory/ as JSON files.
+Memories are stored in ~/.ccb/memory/ as JSON files.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 
-_MEMORY_DIR = Path.home() / ".claude" / "memory"
+_MEMORY_DIR = Path.home() / ".ccb" / "memory"
 
 
 @dataclass

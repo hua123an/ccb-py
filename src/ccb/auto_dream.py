@@ -31,7 +31,7 @@ class AutoDreamConfig:
 
 
 def _config_dir() -> Path:
-    return Path.home() / ".claude"
+    return Path.home() / ".ccb"
 
 
 def _lock_path() -> Path:
@@ -249,7 +249,7 @@ async def execute_auto_dream(
 
         if provider and registry:
             # Use forked agent for real dream execution
-            from ccb.api.base import Message as Msg, Role
+            from ccb.api.base import Role
             from ccb.loop import run_turn
 
             dream_session_cls = type(session)

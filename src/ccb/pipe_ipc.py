@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 # ── Platform-aware pipe directory ──
-_PIPE_DIR = Path.home() / ".claude" / "ccb-pipes"
+_PIPE_DIR = Path.home() / ".ccb" / "ccb-pipes"
 
 # Message types
 MSG_TASK_ASSIGN = "task_assign"

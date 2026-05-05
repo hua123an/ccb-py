@@ -1,7 +1,7 @@
 """Agent definitions — reusable agent configurations.
 
 Agent definitions are loaded from:
-  1. ~/.claude/agents/*.yaml (user-global)
+  1. ~/.ccb/agents/*.yaml (user-global)
   2. .claude/agents/*.yaml  (project-level)
 
 Each file defines an agent with a specific system prompt, tools, model,
@@ -10,8 +10,7 @@ and other settings, inspired by claude-agent-sdk's AgentDefinition.
 from __future__ import annotations
 
 import json
-import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -62,7 +61,7 @@ def discover_agents(cwd: str = "") -> list[AgentDef]:
     if cwd:
         dirs.append(Path(cwd) / ".claude" / "agents")
     # User-global
-    dirs.append(Path.home() / ".claude" / "agents")
+    dirs.append(Path.home() / ".ccb" / "agents")
 
     for d in dirs:
         if not d.is_dir():
@@ -199,15 +198,15 @@ class AgentRegistry:
 
     def save(self, path: Path | None = None) -> None:
         """Save custom agent definitions to disk."""
-        p = path or (Path.home() / ".claude" / "custom_agents.json")
+        p = path or (Path.home() / ".ccb" / "custom_agents.json")
         p.parent.mkdir(parents=True, exist_ok=True)
         # Only save non-builtin agents (those with a source file or custom)
-        custom = [a.to_dict() for a in self._agents.values() if a.source or not a.name in ("coder", "reviewer", "planner")]
+        custom = [a.to_dict() for a in self._agents.values() if a.source or a.name not in ("coder", "reviewer", "planner")]
         p.write_text(json.dumps(custom, indent=2, ensure_ascii=False))
 
     def load(self, path: Path | None = None) -> None:
         """Load custom agent definitions from disk."""
-        p = path or (Path.home() / ".claude" / "custom_agents.json")
+        p = path or (Path.home() / ".ccb" / "custom_agents.json")
         if not p.exists():
             return
         try:

@@ -4,11 +4,9 @@ Supports both legacy SSE and the newer Streamable HTTP transport.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
 from typing import Any, AsyncIterator
-from urllib.parse import urljoin
 
 try:
     import aiohttp

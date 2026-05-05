@@ -140,7 +140,7 @@ Return ONLY the updated document content, nothing else."""
                 if response and response.content:
                     updated = response.content.strip()
                     # Ensure header is preserved
-                    if not updated.startswith(f"# MAGIC DOC:"):
+                    if not updated.startswith("# MAGIC DOC:"):
                         updated = f"# MAGIC DOC: {doc.title}\n\n{updated}"
                     path.write_text(updated, encoding="utf-8")
                     doc.last_updated_at = time.time()
