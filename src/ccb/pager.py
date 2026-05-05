@@ -18,12 +18,12 @@ from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.styles import Style
 
 
-def _build_keybindings(scroll_offset: list[int], line_count: int, page_size: int) -> KeyBindings:
+def _build_keybindings(scroll_offset: list[int], line_count: int, page_size: list[int]) -> KeyBindings:
     """Build key bindings for scrolling."""
     kb = KeyBindings()
 
     def _clamp():
-        scroll_offset[0] = max(0, min(scroll_offset[0], max(0, line_count - page_size)))
+        scroll_offset[0] = max(0, min(scroll_offset[0], max(0, line_count - page_size[0])))
 
     @kb.add("q")
     @kb.add("escape")
@@ -47,7 +47,7 @@ def _build_keybindings(scroll_offset: list[int], line_count: int, page_size: int
     @kb.add("pageup")
     @kb.add("b")
     def _pageup(event):
-        scroll_offset[0] -= page_size
+        scroll_offset[0] -= page_size[0]
         _clamp()
         event.app.invalidate()
 
@@ -55,7 +55,7 @@ def _build_keybindings(scroll_offset: list[int], line_count: int, page_size: int
     @kb.add("f")
     @kb.add("space")
     def _pagedown(event):
-        scroll_offset[0] += page_size
+        scroll_offset[0] += page_size[0]
         _clamp()
         event.app.invalidate()
 
@@ -66,7 +66,7 @@ def _build_keybindings(scroll_offset: list[int], line_count: int, page_size: int
 
     @kb.add("G", eager=True)
     def _bottom(event):
-        scroll_offset[0] = max(0, line_count - page_size)
+        scroll_offset[0] = max(0, line_count - page_size[0])
         event.app.invalidate()
 
     @kb.add("c-c")
@@ -108,6 +108,7 @@ async def show_pager(
     raw_lines: list[tuple[str, str]] = list(content)
     line_count = len(raw_lines)
     scroll_offset = [0]
+    page_size = [40]  # updated dynamically from terminal height
 
     def _get_visible_lines() -> list[tuple[str, str]]:
         """Return the slice of lines visible at current scroll offset."""
@@ -122,27 +123,43 @@ async def show_pager(
         pos = scroll_offset[0] + 1
         total = line_count
         pct = int(scroll_offset[0] / max(1, line_count - 1) * 100) if line_count > 1 else 0
+        left = f" {title} " if title else " "
+        right = f" [{pos}/{total}  {pct}%]  q/Esc close  ↑↓/jk scroll  g/G top/bottom "
+        # Pad to fill terminal width
+        try:
+            import shutil
+            cols = shutil.get_terminal_size().columns
+        except Exception:
+            cols = 120
+        pad = max(1, cols - len(left) - len(right))
         return [
-            ("class:title", f" {title} " if title else " "),
-            ("class:footer", f" [{pos}/{total}  {pct}%]  q/Esc to close  ↑↓/jk scroll  g/G top/bottom "),
+            ("class:title", left),
+            ("class:title", " " * pad),
+            ("class:footer", right),
         ]
 
     title_control = FormattedTextControl(text=_get_title_bar)
 
-    layout = Layout(
-        HSplit([
-            Window(height=1, content=title_control),
-            Window(
-                content=content_control,
-                right_margins=[ScrollbarMargin()],
-            ),
-        ])
+    # Title bar: 1 row at top, full width
+    title_window = Window(
+        height=1,
+        content=title_control,
+        dont_extend_width=False,
     )
 
-    # We'll set page_size after we know the terminal height
-    page_size = [40]  # default, will be updated
+    # Content: fills remaining space, scrollable
+    content_window = Window(
+        content=content_control,
+        dont_extend_width=False,
+        wrap_lines=False,
+        right_margins=[ScrollbarMargin()],
+    )
 
-    kb = _build_keybindings(scroll_offset, line_count, page_size[0])
+    layout = Layout(
+        HSplit([title_window, content_window])
+    )
+
+    kb = _build_keybindings(scroll_offset, line_count, page_size)
 
     app = Application(
         layout=layout,
@@ -152,20 +169,22 @@ async def show_pager(
         mouse_support=True,
     )
 
-    # Update page_size when renderer knows the terminal height
-    original_before_render = app.renderer.render
+    # Dynamically update page_size from actual terminal height
+    original_render = app.renderer.render
 
     def _patched_render(*a, **kw):
-        h = app.renderer.output.get_size().rows
+        try:
+            h = app.output.get_size().rows
+        except Exception:
+            h = 40
         if h and h > 2:
-            page_size[0] = h - 2  # minus title and footer
-        return original_before_render(*a, **kw)
+            page_size[0] = h - 2  # minus title bar and footer hint
+        return original_render(*a, **kw)
 
     app.renderer.render = _patched_render
 
     try:
         await app.run_async()
     finally:
-        # Restore parent REPL
         from ccb.select_ui import _restore_parent_repl
         await _restore_parent_repl()
