@@ -95,7 +95,7 @@ def compact_messages(
             if msg.content and len(msg.content) > 50:
                 preview = msg.content[:200].replace("\n", " ")
                 summary_parts.append(f"Assistant: {preview}...")
-        elif msg.role == Role.TOOL_RESULT:
+        if msg.tool_results:
             tool_count += 1
 
     summary_lines = [
@@ -184,7 +184,7 @@ async def _llm_summarize(
 
         from ccb.loop import run_turn
         from ccb.tools.base import ToolRegistry
-        _ = await run_turn(
+        await run_turn(
             provider=provider,
             session=temp_session,
             registry=ToolRegistry(),

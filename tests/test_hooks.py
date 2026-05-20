@@ -1,6 +1,5 @@
 """Tests for ccb.hooks module."""
 import json
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest

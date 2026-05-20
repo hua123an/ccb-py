@@ -1,13 +1,12 @@
 """Tests for ccb.ultraplan, ccb.coordinator, ccb.buddy_impl, ccb.migrations modules."""
 import json
 import time
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from ccb.ultraplan import PlanStep, Plan, PlanManager, StepStatus, generate_plan_prompt
-from ccb.coordinator import AgentInstance, Coordinator
+from ccb.coordinator import Coordinator
 from ccb.buddy_impl import Buddy, BuddyState, PETS
 from ccb.migrations import migrate_config, migrate_installed_plugins, CURRENT_VERSION
 
@@ -90,7 +89,7 @@ class TestPlanManager:
 
     def test_update_step(self):
         mgr = PlanManager()
-        plan = mgr.create_plan("Test")
+        mgr.create_plan("Test")
         mgr.add_step(None, "s1", "Step 1")
         assert mgr.update_step("s1", StepStatus.COMPLETED, output="Done") is True
 

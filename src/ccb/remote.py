@@ -6,10 +6,11 @@ and executing operations on remote machines.
 from __future__ import annotations
 
 import asyncio
-import json
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from ccb.json_store import read_json, write_json
 
 
 @dataclass
@@ -49,14 +50,12 @@ class RemoteManager:
         self._load_config()
 
     def _load_config(self) -> None:
-        if not self._config_file.exists():
+        data = read_json(self._config_file, default={})
+        if not isinstance(data, dict):
             return
-        try:
-            data = json.loads(self._config_file.read_text())
-            for name, entry in data.items():
+        for name, entry in data.items():
+            if isinstance(entry, dict):
                 self._hosts[name] = RemoteHost(name=name, **entry)
-        except (json.JSONDecodeError, OSError):
-            pass
 
     def _save_config(self) -> None:
         data = {}
@@ -68,8 +67,7 @@ class RemoteManager:
                 "key_file": host.key_file,
                 "cwd": host.cwd,
             }
-        self._config_file.parent.mkdir(parents=True, exist_ok=True)
-        self._config_file.write_text(json.dumps(data, indent=2))
+        write_json(self._config_file, data)
 
     def add_host(self, name: str, host: str, user: str = "", port: int = 22,
                  key_file: str = "", cwd: str = "") -> RemoteHost:

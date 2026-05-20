@@ -24,6 +24,15 @@ LABEL_ORANGE = "#d77757"        # same as brand   — "Claude" label
 BORDER_DIM = "#555555"           # │ prefix for tool results
 BG_USER = "#1a1a2e"             # user message background tint
 
+# Enhanced UI palette
+STATUS_BAR_BG = "#1a1a2e"
+STATUS_BAR_TEXT = "#e0e0e0"
+HIGHLIGHT_CYAN = "#22d3ee"
+HIGHLIGHT_GREEN = "#4ade80"
+HIGHLIGHT_YELLOW = "#fbbf24"
+HIGHLIGHT_MAGENTA = "#e879f9"
+
+
 THEME = Theme({
     "user": f"bold {LABEL_BLUE}",
     "assistant": f"bold {CLAUDE_ORANGE}",
@@ -36,6 +45,17 @@ THEME = Theme({
     "border": f"{BORDER_DIM}",
     "label.you": f"bold {LABEL_BLUE}",
     "label.claude": f"bold {LABEL_ORANGE}",
+    "status.bar": f"bold {STATUS_BAR_TEXT}",
+    "status.model": f"bold {HIGHLIGHT_CYAN}",
+    "status.context": f"{HIGHLIGHT_GREEN}",
+    "status.memory": f"{HIGHLIGHT_MAGENTA}",
+    "spinner": f"{CLAUDE_ORANGE}",
+    "progress.bar": f"{HIGHLIGHT_CYAN}",
+    "progress.done": f"{HIGHLIGHT_GREEN}",
+    "msg.timestamp": "#6b7280",
+    "tool.running": f"{HIGHLIGHT_CYAN}",
+    "tool.success": f"{HIGHLIGHT_GREEN}",
+    "tool.error": "bold #ef4444",
 })
 
 console = Console(theme=THEME, stderr=True)
@@ -86,17 +106,21 @@ def _record_agent_tool(label: str, tool_name: str) -> None:
     _render_agent_dashboard()
 
 
+_agent_dashboard_last_render: float = 0.0
+_AGENT_DASHBOARD_THROTTLE: float = 0.25  # seconds between renders
+
 def _render_agent_dashboard() -> None:
     """Render (or re-render) the agent progress dashboard in the REPL.
 
-    We replace the dashboard in place by keeping a marker index into the
-    REPL's _msg_lines. On each update we rewrite the block from the marker
-    to the end — this keeps the display a "live" status panel that sits at
-    the bottom of the scrollback while agents are running.
-
-    Strategy: tag each dashboard-owned line with a sentinel style so we can
-    find & strip the previous render. Simpler than index tracking.
+    Throttled to avoid excessive screen flickering during parallel agent runs.
     """
+    global _agent_dashboard_last_render
+    import time
+    now = time.time()
+    if now - _agent_dashboard_last_render < _AGENT_DASHBOARD_THROTTLE:
+        return
+    _agent_dashboard_last_render = now
+    
     repl = _get_repl()
     if not repl:
         # Classic (non-REPL) mode: just print a plain status line per update
@@ -123,8 +147,13 @@ def _render_agent_dashboard() -> None:
         hdr = f"  ✓ {total} subagents complete"
     repl._msg_lines.append(("class:agent-dash", hdr + "\n"))
 
-    # Per-agent rows
-    for label, e in _agent_registry.items():
+    active_items = [(label, e) for label, e in _agent_registry.items() if not e["done"]]
+    done_items = [(label, e) for label, e in _agent_registry.items() if e["done"]]
+    max_active = 5
+    max_done = 2
+    rows = active_items[:max_active] + done_items[-max_done:]
+
+    for label, e in rows:
         if e["done"]:
             icon = "✅"
             detail = f"done in {e['duration']:.1f}s · {e['tool_count']} tools"
@@ -135,6 +164,16 @@ def _render_agent_dashboard() -> None:
         row = f"     {icon} [{label}] {e['task']}  ·  {detail}\n"
         repl._msg_lines.append(("class:agent-dash", row))
 
+    hidden_active = max(0, len(active_items) - max_active)
+    hidden_done = max(0, len(done_items) - min(len(done_items), max_done))
+    hidden_parts = []
+    if hidden_active:
+        hidden_parts.append(f"{hidden_active} more running")
+    if hidden_done:
+        hidden_parts.append(f"{hidden_done} completed hidden")
+    if hidden_parts:
+        repl._msg_lines.append(("class:agent-dash", f"     … {' · '.join(hidden_parts)}\n"))
+
     repl._msg_lines.append(("class:agent-dash", "\n"))
     repl._invalidate()
 
@@ -142,6 +181,12 @@ def _render_agent_dashboard() -> None:
 def agent_registry_clear() -> None:
     """Called at the end of a user turn, once all agents have synthesized."""
     _agent_registry.clear()
+    repl = _get_repl()
+    if repl:
+        repl._msg_lines[:] = [
+            (s, t) for (s, t) in repl._msg_lines if s != "class:agent-dash"
+        ]
+        repl._invalidate()
 
 
 class _REPLConsole:
@@ -167,6 +212,8 @@ class _REPLConsole:
 
     def stop_capture(self) -> list[tuple[str, str]]:
         """Stop buffering and return captured (style, text) tuples."""
+        if not self._capturing:
+            return []
         self._capturing = False
         lines = self._capture_lines
         self._capture_lines = []
@@ -185,9 +232,9 @@ class _REPLConsole:
             except Exception:
                 text = " ".join(str(a) for a in args)
                 _plain_buf.write(text + "\n")
-            text = _plain_buf.getvalue()
+            text = _safe_display_text(_plain_buf.getvalue(), max_line=420, max_total=12000)
             if text:
-                self._capture_lines.append(("", text))
+                self._capture_lines.append(("class:msg-info", text))
             return
 
         repl = _get_repl()
@@ -240,10 +287,102 @@ def _sync_console_width() -> None:
         _capture_console.width = w
 
 
+def _safe_display_text(text: Any, *, max_line: int = 240, max_total: int = 4000) -> str:
+    import re
+    s = "" if text is None else str(text)
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    s = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", s)
+    s = "".join(
+        ch if ch == "\n" or ch == "\t" or ord(ch) >= 32 else " "
+        for ch in s
+    )
+    if len(s) > max_total:
+        s = s[:max_total] + "…"
+    lines = []
+    for line in s.split("\n"):
+        if len(line) > max_line:
+            line = line[:max_line] + "…"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _get_repl():
     """Get the active REPL, if any."""
     from ccb.repl import get_active_repl
     return get_active_repl()
+
+
+_fold_generation = 0
+_fold_counts: dict[str, int] = {}
+
+
+def _reset_repl_folds() -> None:
+    global _fold_generation
+    _fold_generation += 1
+    _fold_counts.clear()
+
+
+def _fold_marker(key: str) -> str:
+    return f"class:fold-{abs(hash(key))}"
+
+
+def _remove_folded_line(repl: Any, marker: str) -> bool:
+    for i, (style, _text) in enumerate(repl._msg_lines):
+        if style != marker:
+            continue
+        end = i + 1
+        while end < len(repl._msg_lines) and "\n" not in repl._msg_lines[end - 1][1]:
+            end += 1
+        del repl._msg_lines[i:end]
+        return True
+    return False
+
+
+def _with_fold_count(
+    fragments: list[tuple[str, str]],
+    count: int,
+) -> list[tuple[str, str]]:
+    if count <= 1:
+        return fragments
+    result = list(fragments)
+    suffix = f" ×{count}"
+    for i in range(len(result) - 1, -1, -1):
+        style, text = result[i]
+        if text.endswith("\n"):
+            body = text[:-1]
+            result[i] = (style, body)
+            result.insert(i + 1, ("class:dim", suffix))
+            result.insert(i + 2, (style, "\n"))
+            return result
+    result.append(("class:dim", suffix))
+    result.append(("", "\n"))
+    return result
+
+
+def _append_folded_fragments(
+    repl: Any,
+    key: str,
+    fragments: list[tuple[str, str]],
+) -> None:
+    scoped_key = f"{id(repl)}:{_fold_generation}:{key}"
+    marker = _fold_marker(scoped_key)
+    found = _remove_folded_line(repl, marker)
+    count = _fold_counts.get(scoped_key, 0) + 1 if found else 1
+    _fold_counts[scoped_key] = count
+    repl._msg_lines.append((marker, ""))
+    repl._msg_lines.extend(_with_fold_count(fragments, count))
+    repl._scroll_back = 0
+    repl._invalidate()
+
+
+def _normalize_info_key(msg: str) -> str:
+    import re
+    lowered = msg.lower()
+    if "rate limit" in lowered or "rate limited" in lowered:
+        return "rate-limit"
+    if "retrying in" in lowered or "retrying" in lowered:
+        return "retry"
+    return re.sub(r"\d+(?:\.\d+)?s", "#s", msg.strip())
 
 
 def _rich_capture(renderable: Any) -> str:
@@ -263,9 +402,11 @@ def _out(text: str = "", style: str = "", *, rich_obj: Any = None) -> None:
             _plain_buf.truncate(0)
             _plain_buf.seek(0)
             _plain_console.print(rich_obj)
-            text = _plain_buf.getvalue()
-        if text:
-            repl_console._capture_lines.append(("", text))
+            text = _safe_display_text(_plain_buf.getvalue(), max_line=420, max_total=12000)
+            if text:
+                repl_console._capture_lines.append((style or "class:msg-info", text))
+        elif text:
+            repl_console._capture_lines.append((style or "class:msg-info", _safe_display_text(text)))
         return
 
     repl = _get_repl()
@@ -291,7 +432,7 @@ def print_banner(version: str, model: str, cwd: str) -> None:
     if repl:
         return  # REPL has its own status bar
     # ── Card layout matching official CondensedLogo ──
-    width = min(console.width - 4, 74)
+    width = console.width - 4
     rule = "─" * max(8, width - 4)
     inner = Text()
     inner.append("Claude Code", style=f"bold {CLAUDE_ORANGE}")
@@ -415,8 +556,8 @@ def _apply_left_border(
                     result.append((border_style, border_char))
                     result.extend(current)
                 else:
-                    # Blank line — just the border, no trailing space
-                    result.append((border_style, "  ┃"))
+                    # Blank line — leave it empty instead of drawing chrome
+                    pass
                 result.append(("", "\n"))
                 current = []
     # Flush trailing partial line (no terminating \n in original)
@@ -440,7 +581,7 @@ def _parse_inline(text: str, frags: list[tuple[str, str]]) -> None:
         r'(\[([^\]]+)\]\(([^)]+)\)'   # [text](url)
         r'|\*\*(.+?)\*\*'              # **bold**
         r'|`(.+?)`'                       # `code`
-        r'|\*(.+?)\*'                    # *italic*
+        r'|(?<!\w)\*([^*\n]+?)\*(?!\w)'  # *italic*
         r'|(https?://[^\s<>\)\]]+)'     # bare URL
         r')'
     )
@@ -470,35 +611,70 @@ def _parse_inline(text: str, frags: list[tuple[str, str]]) -> None:
         frags.append(("", text[pos:]))
 
 
+def _short_name(name: Any, max_len: int = 34) -> str:
+    s = _safe_display_text(name or "", max_line=max_len, max_total=max_len)
+    if len(s) <= max_len:
+        return s
+    keep = max(8, max_len - 2)
+    return "…" + s[-keep:]
+
+
+def attachment_fragments(
+    *,
+    at_files: list[dict[str, Any]] | None = None,
+    images: list[dict[str, Any]] | None = None,
+    files: list[dict[str, Any]] | None = None,
+    media: list[dict[str, Any]] | None = None,
+) -> list[tuple[str, str]]:
+    frags: list[tuple[str, str]] = []
+
+    def _line(icon: str, label: str, items: list[dict[str, Any]] | None) -> None:
+        if not items:
+            return
+        names = [_short_name(item.get("filename") or item.get("path") or label) for item in items]
+        shown = ", ".join(names[:3])
+        hidden = len(names) - 3
+        suffix = f", +{hidden} more" if hidden > 0 else ""
+        frags.append(("class:msg-info", f"  {icon} {len(items)} {label}(s): {shown}{suffix}\n"))
+
+    _line("📄", "@-mentioned file", at_files)
+    _line("📎", "image", images)
+    _line("📄", "file", files)
+    _line("🎬", "media", media)
+    return frags
+
+
 def print_user_message(text: str) -> None:
-    """Print user message with blue left border + 🧑 You label."""
+    """Print user message with a simple label and indented body."""
     repl = _get_repl()
     if repl:
+        _reset_repl_folds()
         repl._msg_lines.append(("", "\n"))
-        repl._msg_lines.append(("class:msg-user-label", "  🧑 You\n"))
-        bordered = _apply_left_border(
-            [("class:msg-user", text + "\n" if not text.endswith("\n") else text)],
-            "class:msg-user-border",
-        )
-        repl._msg_lines.extend(bordered)
+        repl._msg_lines.append(("class:msg-user-label", "  You\n"))
+        body = text + "\n" if not text.endswith("\n") else text
+        for line in body.splitlines():
+            repl._msg_lines.append(("class:msg-user", f"    {line}\n"))
         repl._invalidate()
         return
     # Classic mode: blue left border via Rich columns
     console.print()
     console.print("  [label.you]🧑 You[/label.you]")
     for line in text.split("\n"):
-        console.print(f"  [user]┃[/user] {line}")
+        row = Text("  ┃ ", style="user")
+        row.append(_safe_display_text(line, max_line=240, max_total=500))
+        console.print(row, highlight=False)
 
 
 def print_assistant_text(text: str) -> None:
-    """Print completed assistant message with orange left border + 🤖 Claude label."""
+    """Print completed assistant message with a simple label and indented body."""
+    if not text or not text.strip():
+        return
     repl = _get_repl()
     if repl:
         repl._msg_lines.append(("", "\n"))
-        repl._msg_lines.append(("class:msg-assistant-label", "  🤖 Claude\n"))
+        repl._msg_lines.append(("class:msg-assistant-label", "  Assistant\n"))
         md_frags = _md_to_ptk(text)
-        bordered = _apply_left_border(md_frags, "class:msg-assistant-border")
-        repl._msg_lines.extend(bordered)
+        repl._msg_lines.extend(_apply_left_border(md_frags, "class:msg-assistant-border", border_char="    "))
         repl._invalidate()
         return
     # Classic mode: orange left border + markdown (via Table for stable alignment)
@@ -539,18 +715,26 @@ def print_tool_call(name: str, input_data: dict[str, Any]) -> None:
     except Exception:
         pass
     summary = _summarize_tool_input(name, input_data)
+    summary = _safe_display_text(summary, max_line=160, max_total=300)
+    safe_name = _safe_display_text(name, max_line=80, max_total=80)
     repl = _get_repl()
     if repl:
         # Update spinner verb so footer shows what's happening
         repl._spinner_verb = _TOOL_VERB_MAP.get(name, "Working")
-        repl._msg_lines.append(("class:msg-tool-dot", "  ⏺ "))
-        repl._msg_lines.append(("class:msg-tool-name", f"{name}"))
+        fragments = [
+            ("class:msg-tool-dot", "  ⏺ "),
+            ("class:msg-tool-name", f"{safe_name}"),
+        ]
         if summary:
-            repl._msg_lines.append(("class:msg-tool-summary", f" ({summary})"))
-        repl._msg_lines.append(("", "\n"))
-        repl._invalidate()
+            fragments.append(("class:msg-tool-summary", f" ({summary})"))
+        fragments.append(("", "\n"))
+        _append_folded_fragments(repl, f"tool-call:{safe_name}:{summary}", fragments)
         return
-    console.print(f"  [tool.dot]⏺[/tool.dot] [tool]{name}[/tool]  {summary}", highlight=False)
+    line = Text("  ⏺ ", style="tool.dot")
+    line.append(safe_name, style="tool")
+    if summary:
+        line.append(f"  {summary}", style="tool.dim")
+    console.print(line, highlight=False)
 
 
 def _summarize_tool_result(
@@ -685,34 +869,46 @@ def print_tool_result(
     except Exception:
         pass
     summary = _summarize_tool_result(name, input_data, output, is_error)
+    summary = _safe_display_text(summary, max_line=220, max_total=600)
     repl = _get_repl()
     if repl:
         style = "class:msg-error" if is_error else "class:msg-tool-output"
-        repl._msg_lines.append(("class:msg-border", "  │ "))
-        repl._msg_lines.append((style, f"{summary}\n"))
-        repl._invalidate()
+        fragments = [
+            ("class:msg-border", "  │ "),
+            (style, f"{summary}\n"),
+        ]
+        if is_error:
+            repl._msg_lines.extend(fragments)
+            repl._invalidate()
+        else:
+            _append_folded_fragments(repl, f"tool-result:{name}:{summary}", fragments)
         return
     style = "error" if is_error else "dim"
-    console.print(
-        f"  [border]│[/border] [{style}]{summary}[/{style}]",
-        highlight=False,
-    )
+    line = Text("  │ ", style="border")
+    line.append(summary, style=style)
+    console.print(line, highlight=False)
 
 
 def print_error(msg: str) -> None:
+    msg = _safe_display_text(msg, max_line=220, max_total=1200)
     repl = _get_repl()
     if repl:
         repl.append_output(f"  [✗] {msg}\n", "class:msg-error")
         return
-    console.print(f"  [error]✗ {msg}[/error]")
+    console.print(Text(f"  ✗ {msg}", style="error"))
 
 
 def print_info(msg: str) -> None:
+    msg = _safe_display_text(msg, max_line=220, max_total=1200)
     repl = _get_repl()
     if repl:
-        repl.append_output(f"  {msg}\n", "class:msg-info")
+        _append_folded_fragments(
+            repl,
+            f"info:{_normalize_info_key(msg)}",
+            [("class:msg-info", f"  {msg}\n")],
+        )
         return
-    console.print(f"[dim]{msg}[/dim]")
+    console.print(Text(msg, style="dim"))
 
 
 def print_usage(
@@ -761,7 +957,7 @@ class StreamPrinter:
         self._repl = _get_repl()
         if self._repl:
             self._repl._msg_lines.append(("", "\n"))
-            self._repl._msg_lines.append(("class:msg-assistant-label", "  🤖 Claude\n"))
+            self._repl._msg_lines.append(("class:msg-assistant-label", "  Assistant\n"))
             self._repl._invalidate()
             return
         # Classic mode: show label first, then live-update content
@@ -796,7 +992,12 @@ class StreamPrinter:
 
     def feed_thinking(self, text: str) -> None:
         """Feed thinking/reasoning text (displayed dimmed)."""
+        import re as _re
         import time as _time
+        # Strip thinking_mode tags (may use unicode math chars from some APIs)
+        text = _re.sub(r'<[^>]*thinking_mode[^>]*>.*?</[^>]*thinking_mode[^>]*>', '', text, flags=_re.DOTALL)
+        if not text.strip():
+            return
         if not self._thinking_buf:
             self._thinking_start = _time.time()
         self._thinking_buf += text
@@ -879,16 +1080,23 @@ async def ask_permission(tool_name: str, input_data: dict[str, Any]) -> str:
         if _bypass_all:
             return "allow_once"
         summary = _summarize_tool_input(tool_name, input_data)
-        repl.append_output(f"  {tool_name}  {summary}\n", "class:msg-tool-name")
+        summary = _safe_display_text(summary, max_line=160, max_total=300)
+        safe_tool = _safe_display_text(tool_name, max_line=80, max_total=80)
+        repl.append_output(f"  {safe_tool}  {summary}\n", "class:msg-tool-name")
         try:
-            ok = await repl.ask_permission_async(tool_name, summary)
+            ok = await repl.ask_permission_async(safe_tool, summary)
             return "allow_session" if ok else "deny_once"
         except Exception:
             repl.append_output("  (auto-approved - permission dialog failed)\n", "class:dim")
             return "allow_once"
 
-    summary = _summarize_tool_input(tool_name, input_data)
-    console.print(f"\n  [tool.dot]⏺[/tool.dot] [tool]{tool_name}[/tool]  {summary}")
+    summary = _safe_display_text(_summarize_tool_input(tool_name, input_data), max_line=160, max_total=300)
+    safe_tool = _safe_display_text(tool_name, max_line=80, max_total=80)
+    line = Text("\n  ⏺ ", style="tool.dot")
+    line.append(safe_tool, style="tool")
+    if summary:
+        line.append(f"  {summary}", style="tool.dim")
+    console.print(line, highlight=False)
     console.print("  [dim]│[/dim] [dim]1.[/dim] Allow once    [dim]2.[/dim] Allow session   [dim]3.[/dim] Always allow workspace")
     console.print("  [dim]│[/dim] [dim]4.[/dim] Deny once     [dim]5.[/dim] Always deny workspace")
     try:
@@ -927,7 +1135,17 @@ def _summarize_tool_input(name: str, data: dict[str, Any]) -> str:
     if name == "ask_user_question":
         q = data.get("question", "")
         opts = data.get("options", "")
-        n_opts = len([o.strip() for o in opts.split(",") if o.strip()]) if opts else 0
+        n_opts = 0
+        if isinstance(opts, str):
+            n_opts = len([o.strip() for o in opts.split(",") if o.strip()])
+        elif isinstance(opts, list):
+            for item in opts:
+                if isinstance(item, dict):
+                    label = str(item.get("label") or item.get("value") or item.get("description") or "").strip()
+                    if label:
+                        n_opts += 1
+                elif item is not None and str(item).strip():
+                    n_opts += 1
         summary = q[:60] + ("..." if len(q) > 60 else "")
         if n_opts:
             summary += f" ({n_opts} options)"

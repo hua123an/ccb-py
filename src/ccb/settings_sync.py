@@ -5,11 +5,12 @@ or simple file-based sync.
 """
 from __future__ import annotations
 
-import json
 import shutil
 import time
 from pathlib import Path
 from typing import Any
+
+from ccb.json_store import read_json, write_json
 
 
 SYNC_FILES = [
@@ -33,14 +34,11 @@ class SettingsSync:
         self._load_config()
 
     def _load_config(self) -> None:
-        if self._sync_file.exists():
-            try:
-                self._config = json.loads(self._sync_file.read_text())
-            except (json.JSONDecodeError, OSError):
-                self._config = {}
+        data = read_json(self._sync_file, default={})
+        self._config = data if isinstance(data, dict) else {}
 
     def _save_config(self) -> None:
-        self._sync_file.write_text(json.dumps(self._config, indent=2))
+        write_json(self._sync_file, self._config)
 
     @property
     def enabled(self) -> bool:

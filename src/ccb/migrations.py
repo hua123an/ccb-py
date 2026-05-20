@@ -4,11 +4,12 @@ Handles upgrading config file formats across versions.
 """
 from __future__ import annotations
 
-import json
 import shutil
 import time
 from pathlib import Path
 from typing import Any
+
+from ccb.json_store import read_json, write_json
 
 CURRENT_VERSION = 2
 
@@ -68,9 +69,8 @@ def migrate_config(path: Path | None = None) -> dict[str, Any]:
     if not path.exists():
         return {"_config_version": CURRENT_VERSION}
 
-    try:
-        data = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
+    data = read_json(path)
+    if not isinstance(data, dict):
         return {"_config_version": CURRENT_VERSION}
 
     version = data.get("_config_version", 0)
@@ -86,7 +86,7 @@ def migrate_config(path: Path | None = None) -> dict[str, Any]:
             version = to_v
 
     # Save migrated config
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    write_json(path, data, ensure_ascii=False)
     return data
 
 
@@ -96,9 +96,8 @@ def migrate_installed_plugins(path: Path | None = None) -> dict[str, Any]:
     if not path.exists():
         return {}
 
-    try:
-        data = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
+    data = read_json(path)
+    if data is None:
         return {}
 
     # v2 format has {"version": 2, "plugins": {...}}
@@ -108,11 +107,11 @@ def migrate_installed_plugins(path: Path | None = None) -> dict[str, Any]:
     # v1 / flat format: convert to v2
     if isinstance(data, dict) and "version" not in data:
         _backup(path)
-        v2 = {"version": 2, "plugins": {}}
+        v2: dict[str, Any] = {"version": 2, "plugins": {}}
         for key, val in data.items():
             if isinstance(val, dict):
                 v2["plugins"][key] = [val]
-        path.write_text(json.dumps(v2, indent=2, ensure_ascii=False))
+        write_json(path, v2, ensure_ascii=False)
         return v2
 
     return data
@@ -125,7 +124,7 @@ def run_all_migrations() -> list[str]:
     cfg_path = _config_dir() / "config.json"
     if cfg_path.exists():
         try:
-            data = json.loads(cfg_path.read_text())
+            data = read_json(cfg_path, default={})
             v = data.get("_config_version", 0)
             if v < CURRENT_VERSION:
                 migrate_config(cfg_path)
@@ -136,7 +135,7 @@ def run_all_migrations() -> list[str]:
     plugins_path = _config_dir() / "plugins" / "installed_plugins.json"
     if plugins_path.exists():
         try:
-            data = json.loads(plugins_path.read_text())
+            data = read_json(plugins_path, default={})
             if isinstance(data, dict) and "version" not in data:
                 migrate_installed_plugins(plugins_path)
                 actions.append("installed_plugins.json: flat → v2")

@@ -6,11 +6,15 @@ and monitor server status from any browser.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
 import uuid
 from typing import Any
+
+from ccb.session_repository import list_sessions_with_active, save_session
+from ccb.session_runtime import emit_runtime_warning, resolve_session, run_session_turn, serialize_message
 
 # ---------------------------------------------------------------------------
 # Embedded HTML / CSS / JS -- no external dependencies, no build step
@@ -304,6 +308,7 @@ class RemoteControlServer:
         self._running = False
         self._start_time = time.time()
         self._active_sessions: dict[str, dict[str, Any]] = {}
+        self._session_locks: dict[str, asyncio.Lock] = {}
 
     # ── Public API ────────────────────────────────────────────────
 
@@ -318,6 +323,7 @@ class RemoteControlServer:
         app.router.add_get("/", self._handle_index)
         app.router.add_get("/api/sessions", self._handle_list_sessions)
         app.router.add_get("/api/sessions/{sid}/messages", self._handle_get_messages)
+        app.router.add_post("/api/message", self._handle_send_message)
         app.router.add_post("/api/sessions/{sid}/message", self._handle_send_message)
         app.router.add_get("/api/status", self._handle_status)
         app.router.add_get("/ws", self._handle_websocket)
@@ -366,6 +372,34 @@ class RemoteControlServer:
             "auth_enabled": bool(self.token),
         }
 
+    def _get_or_create_session(
+        self,
+        session_id: str | None = None,
+        *,
+        cwd: str | None = None,
+        model: str | None = None,
+    ) -> Any:
+        """Resolve a persisted session, creating it if needed."""
+        session = resolve_session(
+            session_id,
+            cwd=cwd,
+            model=model,
+            default_cwd=os.getcwd(),
+            metadata_store=self._active_sessions,
+            create=True,
+        )
+        assert session is not None
+        return session
+
+    def _load_session(self, session_id: str) -> Any | None:
+        """Load an existing session without creating a new one."""
+        return resolve_session(
+            session_id,
+            default_cwd=os.getcwd(),
+            metadata_store=self._active_sessions,
+            create=False,
+        )
+
     # ── Auth helper ───────────────────────────────────────────────
 
     def _check_auth(self, request: Any) -> bool:
@@ -392,19 +426,10 @@ class RemoteControlServer:
             return web.json_response({"error": "Unauthorized"}, status=401)
 
         # Merge persisted sessions with in-memory active ones
-        sessions: list[dict[str, Any]] = []
-        try:
-            from ccb.session import Session
-            sessions = Session.list_sessions(limit=30)
-        except Exception:
-            pass
-
-        # Add any active sessions not already in the list
-        known_ids = {s["id"] for s in sessions}
-        for sid, info in self._active_sessions.items():
-            if sid not in known_ids:
-                sessions.insert(0, info)
-
+        sessions = list_sessions_with_active(
+            persisted_limit=30,
+            active_metadata=self._active_sessions,
+        )
         return web.json_response({"sessions": sessions})
 
     async def _handle_get_messages(self, request: Any) -> Any:
@@ -414,29 +439,19 @@ class RemoteControlServer:
 
         sid = request.match_info["sid"]
         try:
-            from ccb.session import Session
-            session = Session.load(sid)
+            session = self._load_session(sid)
             if session:
                 msgs = []
                 for m in session.messages:
-                    d: dict[str, Any] = {
-                        "role": m.role.value,
-                        "content": m.content,
-                    }
-                    if m.tool_calls:
-                        d["tool_calls"] = [
-                            {"id": tc.id, "name": tc.name, "input": tc.input}
-                            for tc in m.tool_calls
-                        ]
-                    if m.tool_results:
-                        d["tool_results"] = [
-                            {"tool_use_id": tr.tool_use_id, "content": tr.content, "is_error": tr.is_error}
-                            for tr in m.tool_results
-                        ]
-                    msgs.append(d)
+                    msgs.append(serialize_message(m))
                 return web.json_response({"session_id": sid, "messages": msgs})
         except Exception:
-            pass
+            emit_runtime_warning(
+                "load_session_messages_failed",
+                session_id=sid,
+                cwd=os.getcwd(),
+            )
+            return web.json_response({"error": "Failed to load session messages"}, status=500)
         return web.json_response({"session_id": sid, "messages": []})
 
     async def _handle_send_message(self, request: Any) -> Any:
@@ -444,7 +459,7 @@ class RemoteControlServer:
         if not self._check_auth(request):
             return web.json_response({"error": "Unauthorized"}, status=401)
 
-        sid = request.match_info["sid"]
+        sid = request.match_info.get("sid", "")
         try:
             body = await request.json()
         except Exception:
@@ -457,16 +472,27 @@ class RemoteControlServer:
         # Try to use the query engine for a response
         try:
             from ccb.query_engine import run_query
-            result = await run_query(message)
+            session, result = await run_session_turn(
+                message,
+                session_id=sid or None,
+                cwd=body.get("cwd") or None,
+                model=body.get("model") or None,
+                default_cwd=os.getcwd(),
+                run_query=run_query,
+                lock_store=self._session_locks,
+                metadata_store=self._active_sessions,
+                save_session=save_session,
+            )
             # Broadcast to WebSocket clients
             await self.broadcast("message", {
-                "session_id": sid,
+                "session_id": session.id,
                 "role": "assistant",
                 "content": result,
             })
             return web.json_response({
-                "session_id": sid,
+                "session_id": session.id,
                 "response": result,
+                "messages": [serialize_message(m) for m in session.messages],
             })
         except ImportError:
             return web.json_response({
@@ -475,6 +501,12 @@ class RemoteControlServer:
                 "note": "query_engine not available; message recorded",
             })
         except Exception as e:
+            emit_runtime_warning(
+                "remote_send_message_failed",
+                session_id=(sid or ""),
+                cwd=body.get("cwd") or os.getcwd(),
+                payload={"error": str(e)},
+            )
             return web.json_response({"error": str(e)}, status=500)
 
     async def _handle_status(self, request: Any) -> Any:
@@ -520,6 +552,8 @@ class RemoteControlServer:
 
     async def _handle_websocket(self, request: Any) -> Any:
         from aiohttp import web
+        if not self._check_auth(request):
+            return web.Response(status=401, text="Unauthorized")
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         ws_id = str(uuid.uuid4())[:8]
@@ -541,9 +575,30 @@ class RemoteControlServer:
                             if text:
                                 try:
                                     from ccb.query_engine import run_query
-                                    result = await run_query(text)
-                                    await ws.send_json({"type": "response", "session_id": sid, "content": result})
+                                    session, result = await run_session_turn(
+                                        text,
+                                        session_id=sid or None,
+                                        cwd=data.get("cwd") or None,
+                                        model=data.get("model") or None,
+                                        default_cwd=os.getcwd(),
+                                        run_query=run_query,
+                                        lock_store=self._session_locks,
+                                        metadata_store=self._active_sessions,
+                                        save_session=save_session,
+                                    )
+                                    await ws.send_json({
+                                        "type": "response",
+                                        "session_id": session.id,
+                                        "content": result,
+                                        "messages": [serialize_message(m) for m in session.messages],
+                                    })
                                 except Exception as e:
+                                    emit_runtime_warning(
+                                        "remote_websocket_send_message_failed",
+                                        session_id=(sid or ""),
+                                        cwd=data.get("cwd") or os.getcwd(),
+                                        payload={"error": str(e)},
+                                    )
                                     await ws.send_json({"type": "error", "error": str(e)})
                         else:
                             await ws.send_json({"type": "error", "error": f"Unknown method: {method}"})

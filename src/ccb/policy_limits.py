@@ -10,12 +10,13 @@ Eligibility:
 """
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from ccb.json_store import read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -65,24 +66,24 @@ class PolicyLimitsService:
     def _load_cache(self) -> None:
         """Load cached policy limits from disk."""
         cp = self._cache_path()
-        if cp.exists():
-            try:
-                data = json.loads(cp.read_text())
-                for key, val in data.get("restrictions", {}).items():
-                    self._state.restrictions[key] = PolicyRestriction(
-                        key=key,
-                        allowed=val.get("allowed", True),
-                    )
-                self._state.etag = data.get("etag", "")
-                self._state.last_fetched = data.get("last_fetched", 0.0)
-                self._state.initialized = True
-            except Exception as e:
-                logger.debug("Failed to load policy cache: %s", e)
+        data = read_json(cp)
+        if not isinstance(data, dict):
+            return
+        try:
+            for key, val in data.get("restrictions", {}).items():
+                self._state.restrictions[key] = PolicyRestriction(
+                    key=key,
+                    allowed=val.get("allowed", True),
+                )
+            self._state.etag = data.get("etag", "")
+            self._state.last_fetched = data.get("last_fetched", 0.0)
+            self._state.initialized = True
+        except Exception as e:
+            logger.debug("Failed to load policy cache: %s", e)
 
     def _save_cache(self) -> None:
         """Persist policy limits to disk."""
         cp = self._cache_path()
-        cp.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "restrictions": {
                 k: {"allowed": v.allowed}
@@ -91,7 +92,7 @@ class PolicyLimitsService:
             "etag": self._state.etag,
             "last_fetched": self._state.last_fetched,
         }
-        cp.write_text(json.dumps(data, indent=2))
+        write_json(cp, data)
 
     async def fetch(self, api_key: str = "") -> bool:
         """Fetch policy limits from API. Returns True if updated."""

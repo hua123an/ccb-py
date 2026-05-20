@@ -9,10 +9,11 @@ and other settings, inspired by claude-agent-sdk's AgentDefinition.
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from ccb.json_store import read_json, write_json
 
 
 @dataclass
@@ -39,15 +40,15 @@ class AgentDef:
 def _load_yaml(path: Path) -> dict[str, Any] | None:
     """Load a YAML file. Falls back to JSON if PyYAML unavailable."""
     try:
-        import yaml
+        import yaml  # type: ignore
         return yaml.safe_load(path.read_text())
     except ImportError:
         pass
     # Fallback: try JSON
-    import json
     try:
-        return json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
+        data = read_json(path)
+        return data if isinstance(data, dict) else None
+    except OSError:
         return None
 
 
@@ -85,7 +86,7 @@ def discover_agents(cwd: str = "") -> list[AgentDef]:
                 disallowed_tools=data.get("disallowedTools") or data.get("disallowed_tools"),
                 effort=data.get("effort"),
                 thinking=data.get("thinking"),
-                thinking_budget=data.get("thinkingBudget", data.get("thinking_budget", 10000)),
+                thinking_budget=int(data.get("thinkingBudget") or data.get("thinking_budget") or 10000),
                 memory=data.get("memory"),
                 permission_mode=data.get("permissionMode") or data.get("permission_mode"),
                 max_turns=data.get("maxTurns") or data.get("max_turns"),
@@ -150,7 +151,7 @@ def apply_agent(agent: AgentDef, provider: Any, state: dict[str, Any]) -> str:
         state["effort"] = agent.effort
 
     # Apply thinking (only for providers that support it)
-    if agent.thinking and getattr(provider, 'supports_thinking', False):
+    if agent.thinking and provider.capabilities.supports_thinking:
         if agent.thinking == "adaptive":
             provider.set_thinking(True, agent.thinking_budget, mode="adaptive")
             state["thinking"] = True
@@ -199,22 +200,23 @@ class AgentRegistry:
     def save(self, path: Path | None = None) -> None:
         """Save custom agent definitions to disk."""
         p = path or (Path.home() / ".ccb" / "custom_agents.json")
-        p.parent.mkdir(parents=True, exist_ok=True)
         # Only save non-builtin agents (those with a source file or custom)
         custom = [a.to_dict() for a in self._agents.values() if a.source or a.name not in ("coder", "reviewer", "planner")]
-        p.write_text(json.dumps(custom, indent=2, ensure_ascii=False))
+        write_json(p, custom, ensure_ascii=False)
 
     def load(self, path: Path | None = None) -> None:
         """Load custom agent definitions from disk."""
         p = path or (Path.home() / ".ccb" / "custom_agents.json")
-        if not p.exists():
+        data = read_json(p, default=[])
+        if not isinstance(data, list):
             return
         try:
-            data = json.loads(p.read_text())
             for item in data:
+                if not isinstance(item, dict):
+                    continue
                 agent = AgentDef(**{k: v for k, v in item.items() if k in AgentDef.__dataclass_fields__})
                 self._agents[agent.name] = agent
-        except (json.JSONDecodeError, OSError, KeyError):
+        except (OSError, KeyError, TypeError):
             pass
 
 

@@ -8,14 +8,17 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from typing import Any
 
 from prompt_toolkit import Application
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import HSplit, Window
+from prompt_toolkit.layout.dimension import D
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 
 
 async def _restore_parent_repl() -> None:
@@ -41,10 +44,11 @@ async def _restore_parent_repl() -> None:
         repl.app.renderer.reset()
     except Exception:
         pass
-    try:
-        repl.app.invalidate()
-    except Exception:
-        pass
+    if not getattr(repl, "_is_busy", False):
+        try:
+            repl.app.invalidate()
+        except Exception:
+            pass
     try:
         repl.app.layout.focus(repl._input_buffer)
     except Exception:
@@ -60,7 +64,8 @@ async def _restore_parent_repl() -> None:
 # ── Shared style ────────────────────────────────────────────────────
 
 SELECT_STYLE = Style.from_dict({
-    "title": "bold #e6b800",
+    "": "bg:#1a1a2e",
+    "title": "bold #8fd3ff",
     "subtitle": "#888888",
     "selected-marker": "bold #2ecc71",
     "selected": "bold #ffffff",
@@ -102,15 +107,48 @@ async def select_one(
     if not items:
         return None
 
+    def _clean(text: Any, max_width: int) -> str:
+        s = "" if text is None else str(text)
+        s = s.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+        s = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", s)
+        s = "".join(ch if ord(ch) >= 32 else " " for ch in s)
+        s = " ".join(s.split())
+        if get_cwidth(s) > max_width:
+            return _clip(s, max(1, max_width - 1)) + "…"
+        return s
+
     # Determine terminal height for auto-sizing
     try:
         term_h = os.get_terminal_size().lines
+        term_w = os.get_terminal_size().columns
         visible_count = min(visible_count, max(4, term_h - 8))
     except OSError:
+        term_w = 80
         pass
+    box_width = max(44, min(88, term_w - 6))
+    inner_width = box_width - 2
 
     selected = [max(0, min(active, len(items) - 1))]
     query = [""]
+
+    def _width(text: str) -> int:
+        return get_cwidth(text)
+
+    def _clip(text: str, max_width: int) -> str:
+        if max_width <= 0:
+            return ""
+        out: list[str] = []
+        used = 0
+        for ch in text:
+            ch_width = get_cwidth(ch)
+            if used + ch_width > max_width:
+                break
+            out.append(ch)
+            used += ch_width
+        return "".join(out)
+
+    def _pad(width: int) -> str:
+        return " " * max(0, inner_width - width)
 
     def _match_text(text: str, term: str, base_style: str, match_style: str) -> list[tuple[str, str]]:
         if not term:
@@ -158,14 +196,15 @@ async def select_one(
         parts: list[tuple[str, str]] = []
 
         # Top border
-        parts.append(("class:border", "  ╭" + "─" * 60 + "╮\n"))
+        parts.append(("class:border", "  ╭" + "─" * inner_width + "╮\n"))
 
         # Title row
         if title:
+            clean_title = _clean(title, inner_width - 2)
             parts.append(("class:border", "  │ "))
-            parts.append(("class:title", f"{title}"))
-            pad = 60 - len(title) - 1
-            parts.append(("", " " * max(1, pad)))
+            parts.append(("class:title", clean_title))
+            pad = inner_width - _width(clean_title) - 1
+            parts.append(("", " " * max(0, pad)))
             parts.append(("class:border", "│\n"))
 
             # Hint row
@@ -173,47 +212,50 @@ async def select_one(
                 hint = f"↑↓ navigate · type to search · enter select · esc {cancel_label}"
             else:
                 hint = f"↑↓ navigate · enter select · esc {cancel_label}"
+            hint = _clean(hint, inner_width - 2)
             parts.append(("class:border", "  │ "))
             parts.append(("class:subtitle", hint))
-            pad = 60 - len(hint) - 1
-            parts.append(("", " " * max(1, pad)))
+            pad = inner_width - _width(hint) - 1
+            parts.append(("", " " * max(0, pad)))
             parts.append(("class:border", "│\n"))
 
-            parts.append(("class:border", "  ├" + "─" * 60 + "┤\n"))
+            parts.append(("class:border", "  ├" + "─" * inner_width + "┤\n"))
 
         # Search bar
         if searchable:
             parts.append(("class:border", "  │ "))
-            parts.append(("class:search-label", f"🔎 {search_placeholder}: "))
+            clean_placeholder = _clean(search_placeholder, 18)
+            parts.append(("class:search-label", f"🔎 {clean_placeholder}: "))
             if query[0]:
-                parts.append(("class:search-value", query[0]))
-                pad = 60 - len(search_placeholder) - len(query[0]) - 6
+                clean_query = _clean(query[0], max(8, inner_width - _width(clean_placeholder) - 8))
+                parts.append(("class:search-value", clean_query))
+                pad = inner_width - _width(clean_placeholder) - _width(clean_query) - 6
             else:
                 parts.append(("class:search-placeholder", "Type to filter..."))
-                pad = 60 - len(search_placeholder) - 20
-            parts.append(("", " " * max(1, pad)))
+                pad = inner_width - _width(clean_placeholder) - 20
+            parts.append(("", " " * max(0, pad)))
             parts.append(("class:border", "│\n"))
-            parts.append(("class:border", "  ├" + "─" * 60 + "┤\n"))
+            parts.append(("class:border", "  ├" + "─" * inner_width + "┤\n"))
 
         # Items
         filtered, start, end = _visible_indices()
         if not filtered:
             parts.append(("class:border", "  │ "))
             parts.append(("class:empty", "  No matches"))
-            parts.append(("", " " * 47))
+            parts.append(("", " " * max(0, inner_width - 13)))
             parts.append(("class:border", "│\n"))
         else:
             if start > 0:
                 parts.append(("class:border", "  │"))
                 parts.append(("class:subtitle", "   ↑ more"))
-                parts.append(("", " " * 50))
+                parts.append(("", " " * max(0, inner_width - 9)))
                 parts.append(("class:border", "│\n"))
 
             for i in filtered[start:end]:
                 item = items[i]
-                label = item.get("label", "")
-                desc = item.get("description", "")
-                hint = item.get("hint", "")
+                label = _clean(item.get("label", ""), max(12, inner_width // 2))
+                desc = _clean(item.get("description", ""), max(12, inner_width // 3))
+                hint = _clean(item.get("hint", ""), max(8, inner_width // 4))
 
                 parts.append(("class:border", "  │"))
 
@@ -238,21 +280,31 @@ async def select_one(
                         line_parts.extend(_match_text(hint, query[0], "class:hint", "class:match"))
 
                 # Calculate visible length for padding
-                vis_len = sum(len(t) for _, t in line_parts)
-                pad = 60 - vis_len
+                vis_len = sum(_width(t) for _, t in line_parts)
+                if vis_len > inner_width:
+                    remaining = inner_width
+                    clipped: list[tuple[str, str]] = []
+                    for style, chunk in line_parts:
+                        if remaining <= 0:
+                            break
+                        piece = _clip(chunk, remaining)
+                        clipped.append((style, piece))
+                        remaining -= _width(piece)
+                    line_parts = clipped
+                    vis_len = sum(_width(t) for _, t in line_parts)
                 for lp in line_parts:
                     parts.append(lp)
-                parts.append(("", " " * max(1, pad)))
+                parts.append(("", _pad(vis_len)))
                 parts.append(("class:border", "│\n"))
 
             if end < len(filtered):
                 parts.append(("class:border", "  │"))
                 parts.append(("class:subtitle", "   ↓ more"))
-                parts.append(("", " " * 50))
+                parts.append(("", " " * max(0, inner_width - 9)))
                 parts.append(("class:border", "│\n"))
 
         # Bottom border
-        parts.append(("class:border", "  ╰" + "─" * 60 + "╯\n"))
+        parts.append(("class:border", "  ╰" + "─" * inner_width + "╯\n"))
         return parts
 
     def _move(delta: int) -> None:
@@ -332,50 +384,53 @@ async def select_one(
         @kb.add("<any>")
         def _type_search(event: Any) -> None:
             text = event.data
-            if text and text.isprintable() and text not in ("\r", "\n"):
+            if text and text.isprintable() and text not in ("\r", "\n") and len(query[0]) < 80:
                 query[0] += text
 
-    # Pad content to fill the full terminal so the parent REPL doesn't bleed through.
-    try:
-        term_h = os.get_terminal_size().lines
-    except OSError:
-        term_h = 40
-
-    def _padded_fragments() -> list[tuple[str, str]]:
-        frags = _get_fragments()
-        # Count how many lines the select box takes
-        line_count = sum(1 for _, t in frags if "\n" in t)
-        pad = max(0, term_h - line_count - 1)
-        if pad > 0:
-            frags.append(("", "\n" * pad))
-        return frags
-
-    control = FormattedTextControl(_padded_fragments)
+    control = FormattedTextControl(_get_fragments)
+    selector_window = Window(
+        control,
+        wrap_lines=False,
+        style="class:bg",
+        height=max(4, visible_count + (4 if title else 1) + (2 if searchable else 0)),
+        dont_extend_height=True,
+    )
+    root = HSplit([
+        Window(char=" ", style="class:bg", height=D(weight=1)),
+        selector_window,
+        Window(char=" ", style="class:bg", height=D(weight=1)),
+    ], style="class:bg")
 
     # Suspend parent REPL renderer so it doesn't draw behind us
     from ccb.repl import get_active_repl
     _parent = get_active_repl()
     if _parent is not None:
-        _parent._nested_app_active = True
         try:
-            _parent.app.renderer.erase()
-            _parent.app.renderer.erase_when_done = False
+            _parent.enter_nested_overlay()
         except Exception:
             pass
 
     selector_app: Application[int | None] = Application(
-        layout=Layout(Window(control, wrap_lines=False)),
+        layout=Layout(root),
         key_bindings=kb,
         style=SELECT_STYLE,
         full_screen=True,
-        alternate_screen=True,  # use separate screen buffer so parent can't bleed through
         mouse_support=False,
     )
     try:
+        selector_app.invalidate()
+        await asyncio.sleep(0)
         return await selector_app.run_async()
     finally:
+        try:
+            selector_app.renderer.erase()
+            selector_app.output.erase_screen()
+            selector_app.output.cursor_goto(0, 0)
+            selector_app.output.flush()
+        except Exception:
+            pass
         if _parent is not None:
-            _parent._nested_app_active = False
+            _parent.exit_nested_overlay()
         await _restore_parent_repl()
 
 
@@ -436,23 +491,34 @@ async def ask_text(
     from ccb.repl import get_active_repl
     _parent = get_active_repl()
     if _parent is not None:
-        _parent._nested_app_active = True
         try:
-            _parent.app.renderer.erase()
+            _parent.enter_nested_overlay()
         except Exception:
             pass
 
+    root = HSplit([
+        Window(char=" ", style="class:bg", height=D(weight=1)),
+        frame,
+        Window(char=" ", style="class:bg", height=D(weight=1)),
+    ], style="class:bg")
+
     app: Application[str | None] = Application(
-        layout=Layout(frame, focused_element=text_area),
+        layout=Layout(root, focused_element=text_area),
         key_bindings=kb,
         style=SELECT_STYLE,
         full_screen=True,
-        alternate_screen=True,
         mouse_support=False,
     )
     try:
         return await app.run_async()
     finally:
+        try:
+            app.renderer.erase()
+            app.output.erase_screen()
+            app.output.cursor_goto(0, 0)
+            app.output.flush()
+        except Exception:
+            pass
         if _parent is not None:
-            _parent._nested_app_active = False
+            _parent.exit_nested_overlay()
         await _restore_parent_repl()

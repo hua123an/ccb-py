@@ -5,11 +5,12 @@ Observable: listeners can subscribe to state changes.
 """
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+
+from ccb.json_store import read_json, write_json
 
 
 @dataclass
@@ -134,18 +135,15 @@ class StateManager:
         ]
 
     def save(self, path: Path) -> None:
-        path.write_text(json.dumps(self._state.to_dict(), indent=2, default=str))
+        write_json(path, self._state.to_dict(), default=str)
 
     def load(self, path: Path) -> None:
-        if not path.exists():
+        data = read_json(path)
+        if not isinstance(data, dict):
             return
-        try:
-            data = json.loads(path.read_text())
-            for k, v in data.items():
-                if hasattr(self._state, k):
-                    setattr(self._state, k, v)
-        except (json.JSONDecodeError, OSError):
-            pass
+        for k, v in data.items():
+            if hasattr(self._state, k):
+                setattr(self._state, k, v)
 
 
 # Module singleton

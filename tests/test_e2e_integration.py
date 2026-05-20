@@ -5,14 +5,11 @@ to provider format conversion, without hitting real APIs.
 """
 from __future__ import annotations
 
-import json
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
-from ccb.api.base import Message, Role, StreamEvent, ToolCall, ToolResult
+from ccb.api.base import Message, Role, ToolCall, ToolResult
 from ccb.session import Session
 
 

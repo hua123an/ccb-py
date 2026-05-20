@@ -411,7 +411,7 @@ class CompactQualityAssessor:
         """Assess compaction quality. Returns score 0.0-1.0 and details."""
         import re as _re
 
-        checks: dict[str, bool] = {}
+        checks: dict[str, Any] = {}
         score = 0.0
         max_score = 0.0
 

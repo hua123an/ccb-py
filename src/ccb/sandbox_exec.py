@@ -235,7 +235,7 @@ class SandboxExecutor:
     # ── Environment filtering ──
 
     def execute_with_env(self, command: str, env: dict[str, str] | None = None,
-                         cwd: str | None = None) -> "asyncio.coroutine":
+                         cwd: str | None = None) -> Any:
         """Execute with a filtered environment."""
         return self.execute(command, cwd)
 

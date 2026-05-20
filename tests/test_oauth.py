@@ -1,9 +1,7 @@
 """Tests for ccb.oauth module."""
 import json
 import time
-from pathlib import Path
 
-import pytest
 
 from ccb.oauth.token_store import OAuthToken, TokenStore
 from ccb.oauth.flow import OAuthConfig, OAuthFlow, KNOWN_PROVIDERS
@@ -132,10 +130,6 @@ class TestOAuthClient:
                 "client_secret": "test_secret",
             }
         }))
-
-        # Monkeypatch home
-        import ccb.oauth.client as client_module
-        original_configs = OAuthClient._load_configs
 
         c = OAuthClient()
         # Just test it doesn't crash

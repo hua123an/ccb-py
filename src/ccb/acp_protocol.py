@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Coroutine
 
+from ccb.tools.base import create_default_registry, validate_input
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -288,6 +290,7 @@ class ACPSessionState:
     """Internal session state tracked by the ACP server."""
     session_id: str
     prompt: str = ""
+    cwd: str = "."
     tools: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -302,6 +305,20 @@ class ACPSessionState:
 # ---------------------------------------------------------------------------
 
 MethodHandler = Callable[[dict[str, Any]], Coroutine[Any, Any, Any]]
+
+
+class _AwaitableString(str):
+    """String response that can also be awaited by async dispatch callers."""
+
+    def __await__(self):
+        async def _return_self() -> str:
+            return str(self)
+
+        return _return_self().__await__()
+
+
+async def _immediate_response(response: str | None) -> str | None:
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +402,7 @@ class ACPServer:
         state = ACPSessionState(
             session_id=session_id,
             prompt=params.get("prompt", ""),
+            cwd=params.get("cwd", "."),
             tools=params.get("tools", []),
             connected_ides=[ide_type] if ide_type else [],
         )
@@ -411,6 +429,7 @@ class ACPServer:
         })
         return {
             "session_id": session_id,
+            "cwd": state.cwd,
             "messages": state.messages,
             "tool_state": state.tool_state,
             "cursor_position": state.cursor_position,
@@ -423,6 +442,7 @@ class ACPServer:
             sessions.append({
                 "session_id": sid,
                 "prompt": state.prompt,
+                "cwd": state.cwd,
                 "tools": state.tools,
                 "created_at": state.created_at,
                 "updated_at": state.updated_at,
@@ -435,6 +455,21 @@ class ACPServer:
         tool_name = params.get("name", "")
         tool_args = params.get("args", {})
         session_id = params.get("session_id", "")
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            raise ACPClientError("Missing or invalid tool name", ACPError.INVALID_PARAMS)
+        if not isinstance(tool_args, dict):
+            raise ACPClientError("Tool args must be an object", ACPError.INVALID_PARAMS)
+        state = self._sessions.get(session_id) if session_id else None
+        cwd = state.cwd if state and state.cwd else "."
+        registry = create_default_registry(cwd)
+        tool = registry.get(tool_name)
+        if tool is not None:
+            validation_errors = validate_input(tool_args, tool.input_schema)
+            if validation_errors:
+                raise ACPClientError(
+                    "Invalid tool input: " + "; ".join(validation_errors),
+                    ACPError.INVALID_PARAMS,
+                )
         await self._emit_notification(MessageType.TOOL_CALL, {
             "name": tool_name,
             "args": tool_args,
@@ -470,7 +505,9 @@ class ACPServer:
         """
         try:
             from ccb.permissions import needs_permission
-            if needs_permission(tool, args):
+            state = self._sessions.get(session_id) if session_id else None
+            cwd = state.cwd if state and state.cwd else ""
+            if needs_permission(tool, args, cwd=cwd):
                 return {"decision": "ask"}
             return {"decision": "allowed"}
         except ImportError:
@@ -479,17 +516,20 @@ class ACPServer:
     async def _handle_skill_list(self, params: dict[str, Any]) -> dict[str, Any]:
         """List available skills."""
         cwd = params.get("cwd", ".")
-        skills = await self.list_skills(cwd)
+        kind = params.get("kind")
+        skills = await self.list_skills(cwd, kind=kind)
         return {"skills": skills}
 
-    async def list_skills(self, cwd: str = ".") -> list[dict[str, Any]]:
+    async def list_skills(
+        self,
+        cwd: str = ".",
+        kind: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Override or use the default ccb skill loader."""
         try:
-            from ccb.skills import load_skills
-            return [
-                {"name": s.name, "description": s.description, "source": s.source}
-                for s in load_skills(cwd)
-            ]
+            from ccb.skills import list_skills, normalize_skill_kind, skill_metadata
+            wanted_kind = normalize_skill_kind(kind)
+            return [skill_metadata(s) for s in list_skills(cwd, kind=wanted_kind)]
         except ImportError:
             return []
 
@@ -506,8 +546,32 @@ class ACPServer:
     async def invoke_skill(
         self, name: str, args: dict[str, Any]
     ) -> dict[str, Any]:
-        """Override to provide skill invocation."""
-        return {"status": "not_implemented", "skill": name}
+        """Default skill invocation backed by the local ccb skill loader."""
+        from ccb.skills import normalize_skill_kind, resolve_skill_prompt, skill_metadata
+
+        if not isinstance(name, str) or not name.strip():
+            raise ACPClientError("Missing or invalid skill name", ACPError.INVALID_PARAMS)
+
+        cwd = str(args.get("cwd") or ".")
+        try:
+            kind = normalize_skill_kind(args.get("kind"))
+        except ValueError as exc:
+            raise ACPClientError(str(exc), ACPError.INVALID_PARAMS) from exc
+
+        prompt_args = args.get("prompt_args")
+        if prompt_args is None:
+            prompt_args = args.get("text") or args.get("arguments") or ""
+
+        resolved = resolve_skill_prompt(cwd, name, prompt_args, kind=kind)
+        if resolved is None:
+            raise ACPClientError(f"Skill not found: {name}", ACPError.SKILL_NOT_FOUND)
+        skill, prompt = resolved
+
+        return {
+            "status": "ok",
+            "skill": skill_metadata(skill),
+            "prompt": prompt,
+        }
 
     # -- Notifications --
 
@@ -523,34 +587,53 @@ class ACPServer:
 
     # -- Request dispatch --
 
-    async def _dispatch(self, raw: str) -> str | None:
+    def _dispatch(self, raw: str) -> Coroutine[Any, Any, str | None] | _AwaitableString | None:
         """Parse and dispatch a single JSON-RPC message. Returns response JSON."""
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
-            return error_response(None, ACPError.PARSE_ERROR, "Parse error").to_json()
+            return _immediate_response(
+                error_response(None, ACPError.PARSE_ERROR, "Parse error").to_json()
+            )
 
         req_id = data.get("id")
         method = data.get("method", "")
         params = data.get("params", {})
 
         if not method:
-            return error_response(req_id, ACPError.INVALID_REQUEST, "Missing method").to_json()
-
-        # Gate non-initialize methods behind initialization
-        if method != "initialize" and not self._initialized:
-            return error_response(
-                req_id, ACPError.INVALID_REQUEST, "Server not initialized"
-            ).to_json()
+            return _AwaitableString(
+                error_response(req_id, ACPError.INVALID_REQUEST, "Missing method").to_json()
+            )
 
         handler = self._handlers.get(method)
         if handler is None:
-            return error_response(
-                req_id, ACPError.METHOD_NOT_FOUND, f"Method not found: {method}"
-            ).to_json()
+            return _AwaitableString(
+                error_response(
+                    req_id, ACPError.METHOD_NOT_FOUND, f"Method not found: {method}"
+                ).to_json()
+            )
 
+        # Gate non-initialize methods behind initialization
+        if method != "initialize" and not self._initialized:
+            return _AwaitableString(
+                error_response(
+                    req_id, ACPError.INVALID_REQUEST, "Server not initialized"
+                ).to_json()
+            )
+
+        return self._dispatch_async(req_id, method, params, handler)
+
+    async def _dispatch_async(
+        self,
+        req_id: str | int | None,
+        method: str,
+        params: dict[str, Any],
+        handler: MethodHandler,
+    ) -> str | None:
         try:
             result = await handler(params)
+        except ACPClientError as exc:
+            return error_response(req_id, exc.code, str(exc)).to_json()
         except Exception as exc:
             logger.exception("Handler error for %s", method)
             return error_response(
@@ -787,15 +870,29 @@ class ACPClient:
             "session_id": session_id,
         })
 
-    async def skill_list(self, cwd: str = ".") -> list[dict[str, Any]]:
-        """List available skills."""
-        result = await self._send_request("skill/list", {"cwd": cwd})
+    async def skill_list(
+        self,
+        cwd: str = ".",
+        kind: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List available skills, optionally filtered by kind."""
+        params: dict[str, Any] = {"cwd": cwd}
+        if kind:
+            params["kind"] = kind
+        result = await self._send_request("skill/list", params)
         return result.get("skills", [])
 
     async def skill_invoke(
         self, name: str, args: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        """Invoke a skill by name."""
+        """Invoke a skill by name.
+
+        Useful args:
+          cwd: project root for lookup
+          kind: "skill" | "workflow"
+          prompt_args: structured arguments merged into the generated prompt
+          text / arguments: string fallback when prompt_args is omitted
+        """
         return await self._send_request("skill/invoke", {
             "name": name,
             "args": args or {},

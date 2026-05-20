@@ -1,19 +1,16 @@
 """Tests for ccb.github_ops module."""
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-import pytest
 
 from ccb.github_ops import (
-    _gh, gh_available, PRComment, Issue,
-    pr_list, pr_comments, pr_create, pr_merge, pr_close, pr_reopen,
+    _gh, pr_list, pr_comments, pr_create, pr_merge, pr_close, pr_reopen,
     pr_review_submit, pr_ready,
-    issue_list, issue_view, issue_create, issue_close, issue_reopen,
+    issue_list, issue_create, issue_close, issue_reopen,
     issue_comment, issue_edit,
     release_list, release_create,
     workflow_list, run_list,
     gist_create,
-    review_pr, generate_review_prompt, generate_autofix_prompt,
-    repo_info,
+    review_pr, generate_review_prompt, repo_info,
 )
 
 
@@ -87,7 +84,6 @@ class TestPROperations:
 
 class TestPRComments:
     def test_pr_comments_with_reviews(self):
-        import json
         pr_data = {
             "comments": [{"author": {"login": "user1"}, "body": "Nice!", "createdAt": "2024-01-01"}],
             "reviews": [{"author": {"login": "user2"}, "body": "Fix this", "state": "CHANGES_REQUESTED", "submittedAt": "2024-01-02"}],

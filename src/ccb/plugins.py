@@ -41,7 +41,6 @@ its root. After install we also scan for:
 """
 from __future__ import annotations
 
-import json
 import re
 import shutil
 import subprocess
@@ -76,6 +75,9 @@ def _installed_plugins_file() -> Path:
 
 OFFICIAL_MARKETPLACE_NAME = "claude-plugins-official"
 OFFICIAL_MARKETPLACE_REPO = "anthropics/claude-plugins-official"
+OFFICIAL_MARKETPLACE_URL = (
+    "https://raw.githubusercontent.com/anthropics/claude-plugins-official/main/marketplace.json"
+)
 
 
 # ── Source parsing ───────────────────────────────────────────────────
@@ -167,16 +169,14 @@ def parse_marketplace_input(source: str) -> MarketplaceSource:
 
 def load_known_marketplaces() -> dict[str, dict[str, Any]]:
     f = _known_marketplaces_file()
-    if not f.exists():
-        return {}
-    try:
-        return json.loads(f.read_text())
-    except Exception:
-        return {}
+    from ccb.json_store import read_json
+    data = read_json(f, default={})
+    return data if isinstance(data, dict) else {}
 
 
 def save_known_marketplaces(cfg: dict[str, dict[str, Any]]) -> None:
-    _known_marketplaces_file().write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
+    from ccb.json_store import write_json
+    write_json(_known_marketplaces_file(), cfg, ensure_ascii=False)
 
 
 # ── Installed-plugins registry ───────────────────────────────────────
@@ -195,10 +195,8 @@ def load_installed_plugins() -> dict[str, dict[str, Any]]:
     f = _installed_plugins_file()
     if not f.exists():
         return {}
-    try:
-        raw = json.loads(f.read_text())
-    except Exception:
-        return {}
+    from ccb.json_store import read_json
+    raw = read_json(f, default={})
     if not isinstance(raw, dict):
         return {}
     # Detect v2 format
@@ -236,7 +234,8 @@ def save_installed_plugins(cfg: dict[str, dict[str, Any]]) -> None:
     is_v2 = False
     try:
         if f.exists():
-            existing = json.loads(f.read_text())
+            from ccb.json_store import read_json
+            existing = read_json(f, default={})
             is_v2 = isinstance(existing, dict) and "version" in existing and "plugins" in existing
     except Exception:
         pass
@@ -260,7 +259,8 @@ def save_installed_plugins(cfg: dict[str, dict[str, Any]]) -> None:
                     "installedAt": info.get("installedAt", ""),
                     "lastUpdated": info.get("lastUpdated", ""),
                 }]
-        f.write_text(json.dumps({"version": 2, "plugins": plugins_out}, indent=2, ensure_ascii=False))
+        from ccb.json_store import write_json
+        write_json(f, {"version": 2, "plugins": plugins_out}, ensure_ascii=False)
     else:
         # Strip internal keys before saving flat format
         clean = {}
@@ -269,7 +269,8 @@ def save_installed_plugins(cfg: dict[str, dict[str, Any]]) -> None:
                 clean[pid] = {k: v for k, v in info.items() if not k.startswith("_")}
             else:
                 clean[pid] = info
-        f.write_text(json.dumps(clean, indent=2, ensure_ascii=False))
+        from ccb.json_store import write_json
+        write_json(f, clean, ensure_ascii=False)
 
 
 # ── Identifier parsing ───────────────────────────────────────────────
@@ -373,12 +374,16 @@ def load_marketplace_manifest(name: str) -> dict[str, Any] | None:
         if not path.exists():
             return None
         try:
-            return json.loads(path.read_text())
+            from ccb.json_store import read_json
+            data = read_json(path)
+            return data if isinstance(data, dict) else None
         except Exception:
             return None
     if src_kind == "file":
         try:
-            return json.loads(path.read_text())
+            from ccb.json_store import read_json
+            data = read_json(path)
+            return data if isinstance(data, dict) else None
         except Exception:
             return None
     # github, git, directory → a folder
@@ -386,7 +391,9 @@ def load_marketplace_manifest(name: str) -> dict[str, Any] | None:
     if not mp:
         return None
     try:
-        return json.loads(mp.read_text())
+        from ccb.json_store import read_json
+        data = read_json(mp)
+        return data if isinstance(data, dict) else None
     except Exception:
         return None
 
@@ -453,13 +460,15 @@ def materialize_marketplace(source: MarketplaceSource, suggested_name: str = "")
     name = suggested_name or tmp_name
     if source.kind == "url":
         try:
-            data = json.loads(Path(install_location).read_text())
+            from ccb.json_store import read_json
+            data = read_json(Path(install_location), default={})
             name = data.get("name") or name
         except Exception:
             pass
     elif source.kind == "file":
         try:
-            data = json.loads(Path(install_location).read_text())
+            from ccb.json_store import read_json
+            data = read_json(Path(install_location), default={})
             name = data.get("name") or name
         except Exception:
             pass
@@ -467,7 +476,8 @@ def materialize_marketplace(source: MarketplaceSource, suggested_name: str = "")
         mp = _find_marketplace_json(Path(install_location))
         if mp:
             try:
-                data = json.loads(mp.read_text())
+                from ccb.json_store import read_json
+                data = read_json(mp, default={})
                 name = data.get("name") or name
             except Exception:
                 pass

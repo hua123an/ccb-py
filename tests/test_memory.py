@@ -1,12 +1,10 @@
 """Tests for ccb.memory module."""
 import json
 import time
-from pathlib import Path
 
 import pytest
 
 from ccb.memory import (
-    Memory,
     MemoryStore,
     MemoryExtractor,
     apply_decay,

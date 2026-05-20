@@ -5,12 +5,13 @@ Tips are shown sparingly and never repeated within a cooldown period.
 """
 from __future__ import annotations
 
-import json
 import random
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+
+from ccb.json_store import read_json, write_json
 
 
 @dataclass
@@ -184,18 +185,16 @@ class TipScheduler:
 
     def load_history(self) -> None:
         """Load tip history from disk."""
-        if self._persistence_path.exists():
-            try:
-                data = json.loads(self._persistence_path.read_text())
-                self.history.shown = data.get("shown", {})
-            except Exception:
-                pass
+        data = read_json(self._persistence_path, default={})
+        if isinstance(data, dict):
+            shown = data.get("shown", {})
+            if isinstance(shown, dict):
+                self.history.shown = shown
 
     def save_history(self) -> None:
         """Save tip history to disk."""
-        self._persistence_path.parent.mkdir(parents=True, exist_ok=True)
         data = {"shown": self.history.shown}
-        self._persistence_path.write_text(json.dumps(data, indent=2))
+        write_json(self._persistence_path, data)
 
     def format_tip(self, tip: Tip) -> str:
         """Format a tip for display."""

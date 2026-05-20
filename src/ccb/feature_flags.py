@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ccb.json_store import read_json, write_json
+
 log = logging.getLogger(__name__)
 
 _HAS_HTTPX = True
@@ -26,6 +28,65 @@ except ImportError:
 
 _FLAGS_PATH = Path.home() / ".ccb" / "feature_flags.json"
 _REFRESH_INTERVAL = 300.0  # 5 minutes
+
+DEFAULT_FEATURE_FLAGS: dict[str, Any] = {
+    "tengu_kairos_enabled": False,
+    "tengu_kairos_cron": True,
+    "tengu_onyx_plover": {"enabled": True, "minHours": 24, "minSessions": 5},
+    "tengu_ultraplan_enabled": True,
+    "tengu_buddy_enabled": True,
+    "tengu_auto_memory_enabled": True,
+    "tengu_magic_docs_enabled": True,
+    "tengu_context_collapse_enabled": True,
+    "tengu_tool_use_summary_enabled": True,
+    "tengu_policy_limits_enabled": True,
+    "tengu_tips_enabled": True,
+    "tengu_agent_summary_enabled": True,
+    "tengu_jobs_enabled": True,
+    "tengu_daemon_enabled": True,
+    "tengu_plugins_enabled": True,
+    "tengu_mcp_enabled": True,
+    "tengu_hooks_enabled": True,
+    "tengu_sandbox_enabled": True,
+    "tengu_voice_enabled": True,
+    "tengu_bridge_enabled": True,
+    "tengu_remote_enabled": True,
+    "tengu_lsp_enabled": True,
+    "tengu_github_enabled": True,
+    "tengu_oauth_enabled": True,
+    "tengu_memory_decay_enabled": True,
+    "tengu_session_transcript_enabled": True,
+    "tengu_upstream_proxy_enabled": False,
+    "tengu_assistant_panel_enabled": True,
+    "tengu_background_forked_commands": True,
+    "tengu_scheduled_task_missed_prompt": True,
+    "tengu_cron_lock_enabled": True,
+    "tengu_cron_recurring_expiry_hours": 168,
+    "tengu_pipe_chain_enabled": True,
+    "tengu_web_tools_enabled": True,
+    "tengu_computer_tools_enabled": True,
+    "tengu_notebook_tools_enabled": True,
+    "tengu_image_tools_enabled": True,
+    "tengu_agent_tool_enabled": True,
+    "tengu_task_budget_enabled": True,
+    "tengu_guardrails_enabled": True,
+    "tengu_settings_sync_enabled": True,
+    "tengu_proactive_enabled": True,
+    "tengu_fast_mode_enabled": True,
+    "tengu_bedrock_enabled": True,
+    "tengu_vertex_enabled": True,
+    "tengu_gemini_enabled": True,
+    "tengu_openai_compat_enabled": True,
+}
+
+FLAG_ALIASES: dict[str, str] = {
+    "kairos": "tengu_kairos_enabled",
+    "kairos_cron": "tengu_kairos_cron",
+    "auto_dream": "tengu_onyx_plover",
+    "ultraplan": "tengu_ultraplan_enabled",
+    "buddy": "tengu_buddy_enabled",
+    "scheduled_tasks": "tengu_kairos_cron",
+}
 
 
 class FeatureFlags:
@@ -91,7 +152,8 @@ class FeatureFlags:
     def list_flags(self) -> dict[str, Any]:
         """Return all known flags (merged local + remote), excluding env overrides."""
         with self._lock:
-            merged = dict(self._remote_flags)
+            merged = dict(DEFAULT_FEATURE_FLAGS)
+            merged.update(self._remote_flags)
             merged.update(self._local_overrides)
         return merged
 
@@ -126,11 +188,13 @@ class FeatureFlags:
 
     def _resolve(self, flag_name: str) -> Any:
         """Resolve a flag through the priority chain."""
+        flag_name = FLAG_ALIASES.get(flag_name, flag_name)
         # 1. Environment variable override: CCB_FLAG_<UPPER_NAME>
-        env_key = f"CCB_FLAG_{flag_name.upper()}"
-        env_val = os.environ.get(env_key)
-        if env_val is not None:
-            return _parse_env_value(env_val)
+        env_suffix = flag_name.upper().replace("-", "_")
+        for env_key in (f"CCB_FLAG_{env_suffix}", f"CLAUDE_CODE_FLAG_{env_suffix}"):
+            env_val = os.environ.get(env_key)
+            if env_val is not None:
+                return _parse_env_value(env_val)
 
         # 2. Local overrides file
         with self._lock:
@@ -145,27 +209,21 @@ class FeatureFlags:
                     return flag.get("defaultValue", flag.get("value"))
                 return flag
 
-        return None
+        return DEFAULT_FEATURE_FLAGS.get(flag_name)
 
     def _load_local_overrides(self) -> None:
         """Load overrides from ~/.ccb/feature_flags.json."""
-        if not _FLAGS_PATH.exists():
-            return
-        try:
-            data = json.loads(_FLAGS_PATH.read_text())
-            if isinstance(data, dict):
-                with self._lock:
-                    self._local_overrides = data
-        except (json.JSONDecodeError, OSError) as exc:
-            log.debug("Failed to load feature_flags.json: %s", exc)
+        data = read_json(_FLAGS_PATH)
+        if isinstance(data, dict):
+            with self._lock:
+                self._local_overrides = data
 
     def _save_local_overrides(self) -> None:
         """Persist local overrides to disk."""
         try:
-            _FLAGS_PATH.parent.mkdir(parents=True, exist_ok=True)
             with self._lock:
                 data = dict(self._local_overrides)
-            _FLAGS_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+            write_json(_FLAGS_PATH, data, ensure_ascii=False)
         except OSError as exc:
             log.debug("Failed to save feature_flags.json: %s", exc)
 
@@ -226,6 +284,14 @@ def init_flags(**kwargs: Any) -> FeatureFlags:
         _flags.shutdown()
     _flags = FeatureFlags(**kwargs)
     return _flags
+
+
+def is_feature_enabled(flag_name: str, default: bool = False) -> bool:
+    return get_flags().is_enabled(flag_name, default)
+
+
+def get_feature_value(flag_name: str, default: Any = None) -> Any:
+    return get_flags().get_value(flag_name, default)
 
 
 # ── Utilities ────────────────────────────────────────────────────

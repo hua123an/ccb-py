@@ -1,7 +1,6 @@
 """Session management - save, load, resume conversations."""
 from __future__ import annotations
 
-import json
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -10,6 +9,7 @@ from typing import Any
 
 from ccb.api.base import Message, Role, ToolCall, ToolResult
 from ccb.config import claude_dir
+from ccb.json_store import read_json, write_json
 
 
 @dataclass
@@ -27,6 +27,7 @@ class Session:
     # the size of the conversation the model is currently seeing — which is
     # what "context usage" actually means.
     last_input_tokens: int = 0
+    message_count: int = 0
 
     def add_user_message(
         self,
@@ -39,6 +40,7 @@ class Session:
         if media:
             msg.media = media
         self.messages.append(msg)
+        self.message_count = len(self.messages)
         self.updated_at = time.time()
 
     def add_assistant_message(self, text: str, tool_calls: list[ToolCall] | None = None) -> None:
@@ -47,10 +49,12 @@ class Session:
             content=text,
             tool_calls=tool_calls or [],
         ))
+        self.message_count = len(self.messages)
         self.updated_at = time.time()
 
     def add_tool_results(self, results: list[ToolResult]) -> None:
         self.messages.append(Message(role=Role.USER, tool_results=results))
+        self.message_count = len(self.messages)
         self.updated_at = time.time()
 
     def add_usage(self, usage: dict[str, int]) -> None:
@@ -64,18 +68,17 @@ class Session:
         sessions_dir = claude_dir() / "sessions"
         sessions_dir.mkdir(parents=True, exist_ok=True)
         path = sessions_dir / f"{self.id}.json"
-        path.write_text(json.dumps(self._to_dict(), indent=2, ensure_ascii=False))
-        return path
+        return write_json(path, self._to_dict(), ensure_ascii=False)
 
     @classmethod
     def load(cls, session_id: str) -> Session | None:
         path = claude_dir() / "sessions" / f"{session_id}.json"
-        if not path.exists():
+        data = read_json(path)
+        if not isinstance(data, dict):
             return None
         try:
-            data = json.loads(path.read_text())
             return cls._from_dict(data)
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except (KeyError, TypeError):
             return None
 
     @classmethod
@@ -91,29 +94,28 @@ class Session:
             return []
         # Normalise filter path once
         filter_cwd = cwd.rstrip("/") if cwd else None
-        entries = []
+        entries: list[dict[str, Any]] = []
         for f in sorted(sessions_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
             if len(entries) >= limit:
                 break
-            try:
-                data = json.loads(f.read_text())
-                sess_cwd = data.get("cwd", "")
-                # Filter by project directory
-                if filter_cwd and sess_cwd:
-                    norm = sess_cwd.rstrip("/")
-                    if norm != filter_cwd and not norm.startswith(filter_cwd + "/"):
-                        continue
-                elif filter_cwd and not sess_cwd:
-                    continue
-                entries.append({
-                    "id": data.get("id", f.stem),
-                    "cwd": sess_cwd,
-                    "model": data.get("model", ""),
-                    "updated_at": data.get("updated_at", 0),
-                    "messages": len(data.get("messages", [])),
-                })
-            except Exception:
+            data = read_json(f)
+            if not isinstance(data, dict):
                 continue
+            sess_cwd = data.get("cwd", "")
+            # Filter by project directory
+            if filter_cwd and sess_cwd:
+                norm = sess_cwd.rstrip("/")
+                if norm != filter_cwd and not norm.startswith(filter_cwd + "/"):
+                    continue
+            elif filter_cwd and not sess_cwd:
+                continue
+            entries.append({
+                "id": data.get("id", f.stem),
+                "cwd": sess_cwd,
+                "model": data.get("model", ""),
+                "updated_at": data.get("updated_at", 0),
+                "messages": data.get("message_count", len(data.get("messages", []))),
+            })
         return entries
 
     def _to_dict(self) -> dict[str, Any]:
@@ -126,6 +128,7 @@ class Session:
             "total_input_tokens": self.total_input_tokens,
             "total_output_tokens": self.total_output_tokens,
             "last_input_tokens": self.last_input_tokens,
+            "message_count": self.message_count or len(self.messages),
             "messages": [self._msg_to_dict(m) for m in self.messages],
         }
 
@@ -144,9 +147,12 @@ class Session:
             total_input_tokens=data.get("total_input_tokens", 0),
             total_output_tokens=data.get("total_output_tokens", 0),
             last_input_tokens=data.get("last_input_tokens", 0),
+            message_count=data.get("message_count", 0),
         )
         for md in data.get("messages", []):
             s.messages.append(cls._msg_from_dict(md))
+        if not s.message_count:
+            s.message_count = len(s.messages)
         return s
 
     @staticmethod

@@ -1,11 +1,10 @@
 """Tests for ccb.analytics_tracker module."""
 import json
 import time
-from pathlib import Path
 
 import pytest
 
-from ccb.analytics_tracker import AnalyticsTracker, SessionStats, UsageEvent
+from ccb.analytics_tracker import AnalyticsTracker
 
 
 @pytest.fixture
@@ -112,6 +111,16 @@ class TestHistorical:
         assert stats["messages"] == 30
         assert stats["input_tokens"] == 3000
 
+    def test_historical_ignores_invalid_json(self, tmp_path):
+        analytics_dir = tmp_path / "analytics"
+        analytics_dir.mkdir()
+        (analytics_dir / "bad.json").write_text("not-json")
+
+        tracker = AnalyticsTracker(data_dir=analytics_dir)
+        stats = tracker.get_historical_stats(days=7)
+
+        assert stats["sessions"] == 0
+
 
 class TestExport:
     def test_csv_export(self, tmp_path):
@@ -133,6 +142,16 @@ class TestExport:
         csv = tracker.export_csv()
         assert "test" in csv
         assert "500" in csv
+
+    def test_export_csv_skips_invalid_json(self, tmp_path):
+        analytics_dir = tmp_path / "analytics"
+        analytics_dir.mkdir()
+        (analytics_dir / "bad.json").write_text("not-json")
+
+        tracker = AnalyticsTracker(data_dir=analytics_dir)
+        csv = tracker.export_csv()
+
+        assert "session_id" in csv
 
 
 class TestLangfuse:

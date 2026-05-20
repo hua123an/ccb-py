@@ -3,9 +3,7 @@ from __future__ import annotations
 
 import json
 import os
-import time
-from pathlib import Path
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch
 import pytest
 
 
@@ -402,6 +400,46 @@ class TestFlagsCommand:
         result = await handle_command("/flags set new_flag on", session, provider, registry, "/tmp")
         assert result is True
         assert ff.is_enabled("new_flag") is True
+
+    @pytest.mark.asyncio
+    async def test_skills_list_command(self):
+        from ccb.commands import handle_command
+        from ccb.skills import Skill
+
+        session = MagicMock()
+        provider = MagicMock()
+        registry = MagicMock()
+        skills = [
+            Skill(name="review", description="Review code", prompt="p", source="bundled", kind="skill"),
+        ]
+        with (
+            patch("ccb.skills.load_skills", return_value=skills),
+            patch("ccb.commands.console.print") as print_fn,
+        ):
+            result = await handle_command("/skills", session, provider, registry, "/tmp")
+
+        assert result is True
+        assert print_fn.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_workflows_list_command(self):
+        from ccb.commands import handle_command
+        from ccb.skills import Skill
+
+        session = MagicMock()
+        provider = MagicMock()
+        registry = MagicMock()
+        workflows = [
+            Skill(name="shipit", description="Release workflow", prompt="p", source="project", kind="workflow"),
+        ]
+        with (
+            patch("ccb.skills.load_skills", return_value=workflows),
+            patch("ccb.commands.console.print") as print_fn,
+        ):
+            result = await handle_command("/workflows", session, provider, registry, "/tmp")
+
+        assert result is True
+        assert print_fn.call_count == 1
 
 
 # ═══════════════════════════════════════════════════════════════════

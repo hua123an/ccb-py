@@ -61,7 +61,8 @@ class VoiceInput:
         if not self.available:
             return "[Voice input not available — install whisper or sox]"
 
-        audio_file = tempfile.mktemp(suffix=".wav")
+        fd, audio_file = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
         try:
             # Record
             await self._record(audio_file, duration)
@@ -190,7 +191,8 @@ class VoiceInput:
         self._recording = True
         try:
             while self._recording:
-                audio_file = tempfile.mktemp(suffix=".wav")
+                fd, audio_file = tempfile.mkstemp(suffix=".wav")
+                os.close(fd)
                 try:
                     await self._record(audio_file, chunk_duration)
                     text = await self._transcribe(audio_file)

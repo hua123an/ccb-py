@@ -44,11 +44,18 @@ def get_install_info() -> dict[str, Any]:
 def generate_bash_completion() -> str:
     """Generate bash completion script for ccb."""
     from ccb.repl import SLASH_COMMAND_DESCRIPTIONS
-    commands = " ".join(SLASH_COMMAND_DESCRIPTIONS.keys())
+    from ccb.skills import build_skill_command_map
+
+    commands = list(SLASH_COMMAND_DESCRIPTIONS.keys())
+    try:
+        commands.extend(build_skill_command_map(os.getcwd()).keys())
+    except Exception:
+        pass
+    commands_str = " ".join(sorted(set(commands)))
     return f'''# ccb bash completion
 _ccb_completions() {{
     local cur="${{COMP_WORDS[COMP_CWORD]}}"
-    local commands="{commands}"
+    local commands="{commands_str}"
     COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
 }}
 complete -F _ccb_completions ccb
@@ -58,8 +65,16 @@ complete -F _ccb_completions ccb
 def generate_zsh_completion() -> str:
     """Generate zsh completion script for ccb."""
     from ccb.repl import SLASH_COMMAND_DESCRIPTIONS
+    from ccb.skills import build_skill_command_map
+
+    merged = dict(SLASH_COMMAND_DESCRIPTIONS)
+    try:
+        for cmd, desc in build_skill_command_map(os.getcwd()).items():
+            merged.setdefault(cmd, desc)
+    except Exception:
+        pass
     items = []
-    for cmd, desc in SLASH_COMMAND_DESCRIPTIONS.items():
+    for cmd, desc in merged.items():
         safe_desc = desc.replace("'", "'\\''")
         items.append(f"    '{cmd}:{safe_desc}'")
     commands_str = "\n".join(items)
@@ -81,8 +96,16 @@ _ccb "$@"
 def generate_fish_completion() -> str:
     """Generate fish completion script for ccb."""
     from ccb.repl import SLASH_COMMAND_DESCRIPTIONS
+    from ccb.skills import build_skill_command_map
+
+    merged = dict(SLASH_COMMAND_DESCRIPTIONS)
+    try:
+        for cmd, desc in build_skill_command_map(os.getcwd()).items():
+            merged.setdefault(cmd, desc)
+    except Exception:
+        pass
     lines = ["# ccb fish completion"]
-    for cmd, desc in SLASH_COMMAND_DESCRIPTIONS.items():
+    for cmd, desc in merged.items():
         safe = desc.replace("'", "\\'")
         lines.append(f"complete -c ccb -a '{cmd}' -d '{safe}'")
     return "\n".join(lines)

@@ -4,12 +4,13 @@ Virtual coding companion with personality, state, and animations.
 """
 from __future__ import annotations
 
-import json
 import random
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
+
+from ccb.json_store import read_json, write_json
 
 
 # ASCII art pets
@@ -150,18 +151,15 @@ class Buddy:
         self._load()
 
     def _load(self) -> None:
-        if self._config_path.exists():
-            try:
-                data = json.loads(self._config_path.read_text())
-                for k, v in data.items():
-                    if hasattr(self._state, k):
-                        setattr(self._state, k, v)
-            except (json.JSONDecodeError, OSError):
-                pass
+        data = read_json(self._config_path, default={})
+        if not isinstance(data, dict):
+            return
+        for k, v in data.items():
+            if hasattr(self._state, k):
+                setattr(self._state, k, v)
 
     def _save(self) -> None:
-        self._config_path.parent.mkdir(parents=True, exist_ok=True)
-        self._config_path.write_text(json.dumps(asdict(self._state), indent=2))
+        write_json(self._config_path, asdict(self._state))
 
     @property
     def state(self) -> BuddyState:

@@ -30,29 +30,16 @@ class SkillSearchEngine:
         """Build the skill index from all available sources."""
         self._skills.clear()
 
-        # Bundled skills
+        # Use unified load_skills API
         try:
-            from ccb.skills import BUNDLED_SKILLS
-            for name, info in BUNDLED_SKILLS.items():
+            import os
+            from ccb.skills import load_skills
+            for skill in load_skills(os.getcwd()):
                 self._skills.append(SkillMatch(
-                    name=name,
-                    source="bundled",
-                    description=info.get("description", ""),
-                    slash_command=f"/skills {name}" if name else "",
-                    tags=info.get("tags", []),
-                ))
-        except Exception:
-            pass
-
-        # Custom skills from ~/.ccb/skills/
-        try:
-            from ccb.skills import discover_custom_skills
-            for skill in discover_custom_skills():
-                self._skills.append(SkillMatch(
-                    name=skill.get("name", ""),
-                    source="custom",
-                    description=skill.get("description", ""),
-                    slash_command=f"/skills {skill.get('name', '')}",
+                    name=skill.name,
+                    source=skill.source_label,
+                    description=skill.description,
+                    slash_command=skill.invocation_command,
                 ))
         except Exception:
             pass
@@ -66,19 +53,6 @@ class SkillSearchEngine:
                     source="plugin",
                     description=info.get("description", ""),
                     slash_command=cmd,
-                ))
-        except Exception:
-            pass
-
-        # Workflows
-        try:
-            from ccb.skills import discover_workflows
-            for wf in discover_workflows():
-                self._skills.append(SkillMatch(
-                    name=wf.get("name", ""),
-                    source="workflow",
-                    description=wf.get("description", ""),
-                    slash_command=f"/workflows {wf.get('name', '')}",
                 ))
         except Exception:
             pass
@@ -132,7 +106,7 @@ class SkillSearchEngine:
         for w in words:
             word_freq[w] = word_freq.get(w, 0) + 1
 
-        top_words = sorted(word_freq, key=word_freq.get, reverse=True)[:10]
+        top_words = sorted(word_freq, key=lambda k: word_freq[k], reverse=True)[:10]
         query = " ".join(top_words)
         return self.search(query, limit)
 

@@ -1,9 +1,8 @@
 """Tests for ccb.mcp module."""
-import pytest
 
 from ccb.mcp.config_validator import validate_server_config, validate_all_configs
 from ccb.mcp.auth import MCPAuthInfo, MCPAuthManager
-from ccb.mcp.sampling import SamplingRequest, SamplingResponse, SamplingHandler
+from ccb.mcp.sampling import SamplingRequest, SamplingHandler
 
 
 class TestConfigValidator:
@@ -104,13 +103,13 @@ class TestSampling:
         handler = SamplingHandler()
         handler._enabled = False
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(handler.handle_request({}))
+        result = asyncio.run(handler.handle_request({}))
         assert "error" in result
 
     def test_handler_no_callback(self):
         handler = SamplingHandler()
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(handler.handle_request({}))
+        result = asyncio.run(handler.handle_request({}))
         assert "error" in result
 
     def test_toggle(self):

@@ -3,9 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 import pytest
 import pytest_asyncio
@@ -22,13 +19,11 @@ from ccb.acp_protocol import (
     JSONRPCNotification,
     JSONRPCRequest,
     JSONRPCResponse,
-    MessageType,
     ServerCapabilities,
     StdioTransport,
     error_response,
 )
 from ccb.session_restore import (
-    IDEConnection,
     IDEFormatTranslator,
     SessionRestorer,
     SessionState,
@@ -193,7 +188,7 @@ class TestACPServerSessions:
         server = initialized_server
         resp_json = await server._dispatch(json.dumps({
             "jsonrpc": "2.0", "id": 2, "method": "session/create",
-            "params": {"prompt": "hello", "tools": ["bash"]},
+            "params": {"prompt": "hello", "tools": ["bash"], "cwd": "/tmp/project"},
         }))
         resp = json.loads(resp_json)
         sid = resp["result"]["session_id"]
@@ -202,6 +197,7 @@ class TestACPServerSessions:
         sess = server.get_session(sid)
         assert sess is not None
         assert sess.prompt == "hello"
+        assert sess.cwd == "/tmp/project"
         assert "bash" in sess.tools
         assert "zed" in sess.connected_ides
 
@@ -225,6 +221,7 @@ class TestACPServerSessions:
         }))
         resp = json.loads(resp_json)
         assert resp["result"]["session_id"] == sid
+        assert resp["result"]["cwd"] == "."
         assert len(resp["result"]["messages"]) == 1
 
     @pytest.mark.asyncio
@@ -244,13 +241,14 @@ class TestACPServerSessions:
         for i in range(2):
             await server._dispatch(json.dumps({
                 "jsonrpc": "2.0", "id": 10 + i, "method": "session/create",
-                "params": {"prompt": f"session {i}"},
+                "params": {"prompt": f"session {i}", "cwd": f"/tmp/p{i}"},
             }))
         resp_json = await server._dispatch(json.dumps({
             "jsonrpc": "2.0", "id": 20, "method": "session/list", "params": {},
         }))
         resp = json.loads(resp_json)
         assert len(resp["result"]["sessions"]) == 2
+        assert all("cwd" in session for session in resp["result"]["sessions"])
 
     @pytest.mark.asyncio
     async def test_session_remove(self, initialized_server):
@@ -304,6 +302,59 @@ class TestACPServerTools:
         assert resp["result"]["output"] == "ran grep"
 
     @pytest.mark.asyncio
+    async def test_tool_execute_rejects_invalid_tool_args(self, initialized_server):
+        server = initialized_server
+        resp_json = await server._dispatch(json.dumps({
+            "jsonrpc": "2.0", "id": 2, "method": "tool/execute",
+            "params": {"name": "ask_user_question", "args": {"question": 123}},
+        }))
+        resp = json.loads(resp_json)
+        assert resp["error"]["code"] == ACPError.INVALID_PARAMS
+        assert "Invalid tool input:" in resp["error"]["message"]
+        assert "Field 'question' must be a string, got int" in resp["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_tool_execute_rejects_non_object_args(self, initialized_server):
+        server = initialized_server
+        resp_json = await server._dispatch(json.dumps({
+            "jsonrpc": "2.0", "id": 2, "method": "tool/execute",
+            "params": {"name": "ask_user_question", "args": "bad"},
+        }))
+        resp = json.loads(resp_json)
+        assert resp["error"]["code"] == ACPError.INVALID_PARAMS
+        assert "Tool args must be an object" in resp["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_tool_execute_uses_session_cwd_for_registry(self, initialized_server, monkeypatch):
+        server = initialized_server
+        await server._dispatch(json.dumps({
+            "jsonrpc": "2.0", "id": 2, "method": "session/create",
+            "params": {"prompt": "hello", "cwd": "/tmp/acp-project"},
+        }))
+        session_id = next(iter(server._sessions))
+        seen = {}
+
+        class _FakeTool:
+            input_schema = {"type": "object", "properties": {}}
+
+        def _fake_create_default_registry(cwd):
+            seen["cwd"] = cwd
+            registry = type("R", (), {})()
+            registry.get = lambda name: _FakeTool() if name == "ask_user_question" else None
+            return registry
+
+        monkeypatch.setattr("ccb.acp_protocol.create_default_registry", _fake_create_default_registry)
+
+        resp_json = await server._dispatch(json.dumps({
+            "jsonrpc": "2.0", "id": 3, "method": "tool/execute",
+            "params": {"name": "ask_user_question", "args": {"question": "ok"}, "session_id": session_id},
+        }))
+
+        resp = json.loads(resp_json)
+        assert resp["result"]["status"] == "not_implemented"
+        assert seen["cwd"] == "/tmp/acp-project"
+
+    @pytest.mark.asyncio
     async def test_permission_check(self, initialized_server):
         server = initialized_server
         resp_json = await server._dispatch(json.dumps({
@@ -312,6 +363,41 @@ class TestACPServerTools:
         }))
         resp = json.loads(resp_json)
         assert resp["result"]["decision"] in ("allowed", "denied", "ask")
+
+    @pytest.mark.asyncio
+    async def test_permission_check_uses_session_cwd(self, initialized_server, monkeypatch):
+        server = initialized_server
+        await server._dispatch(json.dumps({
+            "jsonrpc": "2.0", "id": 2, "method": "session/create",
+            "params": {"prompt": "hello", "cwd": "/tmp/acp-project"},
+        }))
+        session_id = next(iter(server._sessions))
+        seen = {}
+
+        def _fake_needs_permission(tool, args, cwd=""):
+            seen["tool"] = tool
+            seen["args"] = args
+            seen["cwd"] = cwd
+            return False
+
+        monkeypatch.setattr("ccb.permissions.needs_permission", _fake_needs_permission)
+
+        resp_json = await server._dispatch(json.dumps({
+            "jsonrpc": "2.0", "id": 3, "method": "permission/check",
+            "params": {
+                "tool": "bash",
+                "args": {"command": "ls"},
+                "session_id": session_id,
+            },
+        }))
+
+        resp = json.loads(resp_json)
+        assert resp["result"]["decision"] == "allowed"
+        assert seen == {
+            "tool": "bash",
+            "args": {"command": "ls"},
+            "cwd": "/tmp/acp-project",
+        }
 
     @pytest.mark.asyncio
     async def test_skill_list(self, initialized_server):
@@ -331,7 +417,37 @@ class TestACPServerTools:
             "params": {"name": "test", "args": {}},
         }))
         resp = json.loads(resp_json)
-        assert resp["result"]["status"] == "not_implemented"
+        assert resp["error"]["code"] == ACPError.SKILL_NOT_FOUND
+
+    @pytest.mark.asyncio
+    async def test_skill_invoke_returns_prompt_for_known_skill(self, initialized_server, monkeypatch):
+        server = initialized_server
+        from ccb.skills import Skill
+
+        monkeypatch.setattr(
+            "ccb.skills.load_skills",
+            lambda cwd: [
+                Skill(
+                    name="review",
+                    description="Review code",
+                    prompt="Review the current code",
+                    source="bundled",
+                    kind="skill",
+                )
+            ],
+        )
+        resp_json = await server._dispatch(json.dumps({
+            "jsonrpc": "2.0", "id": 3, "method": "skill/invoke",
+            "params": {
+                "name": "review",
+                "args": {"cwd": ".", "prompt_args": {"focus": "security"}},
+            },
+        }))
+        resp = json.loads(resp_json)
+        assert resp["result"]["status"] == "ok"
+        assert resp["result"]["skill"]["name"] == "review"
+        assert "Review the current code" in resp["result"]["prompt"]
+        assert '"focus": "security"' in resp["result"]["prompt"]
 
 
 class TestACPServerUpdateSession:
@@ -762,6 +878,14 @@ class TestSessionRestorerPersistence:
         restorer.save_session_state("s1", "vscode", messages=[], metadata={"b": 2})
         restored = restorer.restore_session("s1")
         assert restored.metadata == {"a": 1, "b": 2}
+
+    def test_list_stored_sessions_skips_invalid_json(self, tmp_path):
+        restorer = SessionRestorer(storage_dir=tmp_path)
+        (tmp_path / "bad.json").write_text("not-json")
+
+        sessions = restorer.list_stored_sessions()
+
+        assert sessions == []
 
 
 class TestSessionRestorerConnections:

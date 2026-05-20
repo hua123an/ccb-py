@@ -7,7 +7,6 @@ queued → running → waiting → completed/error lifecycle.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 import uuid
@@ -15,6 +14,8 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
+
+from ccb.json_store import read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +65,20 @@ def _jobs_dir() -> Path:
     return Path.home() / ".ccb" / "jobs"
 
 
+def _emit_event(kind: str, action: str, payload: dict[str, Any] | None = None, level: str = "info") -> None:
+    try:
+        from ccb.events import emit_event
+        emit_event(kind, "jobs", action, payload or {}, level=level)
+    except Exception:
+        pass
+
+
 class JobManager:
     """Manages template-based background jobs."""
 
     def __init__(self) -> None:
         self._jobs: dict[str, JobState] = {}
-        self._running_tasks: dict[str, asyncio.Task[None]] = {}
+        self._running_tasks: dict[str, asyncio.Task[bool]] = {}
         self._on_complete: Callable[[JobState], None] | None = None
         self._load_jobs()
 
@@ -80,7 +89,9 @@ class JobManager:
             return
         for f in d.glob("*.json"):
             try:
-                data = json.loads(f.read_text())
+                data = read_json(f, default={})
+                if not isinstance(data, dict):
+                    raise ValueError(f"Invalid job JSON in {f}")
                 job = JobState.from_dict(data)
                 self._jobs[job.id] = job
                 # Reset running jobs to queued (process restart)
@@ -93,10 +104,7 @@ class JobManager:
     def _persist_job(self, job: JobState) -> None:
         """Save a job to disk."""
         d = _jobs_dir()
-        d.mkdir(parents=True, exist_ok=True)
-        (d / f"{job.id}.json").write_text(
-            json.dumps(job.to_dict(), indent=2)
-        )
+        write_json(d / f"{job.id}.json", job.to_dict())
 
     def create_job(
         self,
@@ -121,6 +129,7 @@ class JobManager:
         )
         self._jobs[job.id] = job
         self._persist_job(job)
+        _emit_event("jobs", "created", {"job_id": job.id, "template": template, "cwd": cwd})
         return job
 
     def get_job(self, job_id: str) -> JobState | None:
@@ -180,6 +189,7 @@ class JobManager:
         job.status = JobStatus.RUNNING
         job.updated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ")
         self._persist_job(job)
+        _emit_event("jobs", "started", {"job_id": job.id, "template": job.template, "cwd": job.cwd})
 
         if on_progress:
             on_progress(f"Running job {job.id}: {job.template}")
@@ -205,6 +215,7 @@ class JobManager:
             job.summary = job.result[:100] if job.result else "Done"
             job.updated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ")
             self._persist_job(job)
+            _emit_event("jobs", "completed", {"job_id": job.id, "template": job.template})
 
             if self._on_complete:
                 self._on_complete(job)
@@ -214,6 +225,7 @@ class JobManager:
             job.status = JobStatus.CANCELLED
             job.updated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ")
             self._persist_job(job)
+            _emit_event("jobs", "cancelled", {"job_id": job.id, "template": job.template}, level="warning")
             return False
 
         except Exception as e:
@@ -221,10 +233,18 @@ class JobManager:
             if job.retries >= job.max_retries:
                 job.status = JobStatus.ERROR
                 job.error = str(e)
+                action = "failed"
             else:
                 job.status = JobStatus.QUEUED  # retry
+                action = "retry_queued"
             job.updated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ")
             self._persist_job(job)
+            _emit_event(
+                "jobs",
+                action,
+                {"job_id": job.id, "template": job.template, "retries": job.retries, "error": str(e)},
+                level="error" if action == "failed" else "warning",
+            )
             return False
 
     async def process_queue(
@@ -247,7 +267,7 @@ class JobManager:
         return started
 
     def summary(self) -> dict[str, Any]:
-        status_counts = {}
+        status_counts: dict[str, int] = {}
         for job in self._jobs.values():
             s = job.status.value
             status_counts[s] = status_counts.get(s, 0) + 1

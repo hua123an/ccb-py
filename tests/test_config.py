@@ -1,20 +1,16 @@
 """Tests for ccb.config module."""
 import json
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from ccb.config import (
     load_global_config,
-    get_global_config,
     save_global_config,
     load_settings,
-    get_settings,
     save_settings,
     get_project_config,
-    save_project_config,
     project_config_key,
     load_accounts,
     get_account_names,
@@ -24,7 +20,6 @@ from ccb.config import (
     get_provider,
     get_permission_mode,
     has_completed_onboarding,
-    complete_onboarding,
 )
 
 
@@ -86,6 +81,13 @@ class TestSettings:
             save_settings({"theme": "light"})
             assert json.loads(p.read_text())["theme"] == "light"
 
+    def test_save_creates_parent_directory(self, tmp_path):
+        p = tmp_path / "nested" / "settings.json"
+        with patch("ccb.config.settings_path", return_value=p):
+            save_settings({"theme": "light"})
+            assert p.exists()
+            assert json.loads(p.read_text())["theme"] == "light"
+
 
 class TestProjectConfig:
     def test_key_generation(self):
@@ -134,6 +136,7 @@ class TestAccounts:
             assert switch_account("work") is True
             data = json.loads(p.read_text())
             assert data["active"] == "work"
+            assert p.read_text().endswith("\n")
 
     def test_switch_nonexistent(self, tmp_path):
         p = tmp_path / "accounts.json"
@@ -144,12 +147,18 @@ class TestAccounts:
 
 class TestApiResolution:
     def test_api_key_from_env(self):
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-env-key"}):
-            assert get_api_key() == "sk-env-key"
+        import ccb.config as cfg_mod
+        # Mock get_active_account to return None to ensure env var is used
+        with patch.object(cfg_mod, "get_active_account", return_value=None):
+            with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-env-key"}):
+                assert get_api_key() == "sk-env-key"
 
     def test_model_from_env(self):
-        with patch.dict(os.environ, {"ANTHROPIC_MODEL": "claude-3-haiku"}):
-            assert get_model() == "claude-3-haiku"
+        import ccb.config as cfg_mod
+        # Mock get_active_account to return None to ensure env var is used
+        with patch.object(cfg_mod, "get_active_account", return_value=None):
+            with patch.dict(os.environ, {"ANTHROPIC_MODEL": "claude-3-haiku"}):
+                assert get_model() == "claude-3-haiku"
 
     def test_provider_from_openai_env(self):
         with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-openai"}, clear=False):

@@ -9,11 +9,12 @@ Inspired by OpenAI Agents SDK MCP approval system.
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+from ccb.json_store import read_json, write_json
 
 
 class ApprovalMode(str, Enum):
@@ -134,7 +135,6 @@ class McpApprovalManager:
     def save(self, path: Path | None = None) -> None:
         """Save rules to disk."""
         p = path or (Path.home() / ".ccb" / "mcp_approval.json")
-        p.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "default_mode": self._default_mode.value,
             "auto_approve_servers": sorted(self._auto_approve_servers),
@@ -143,15 +143,15 @@ class McpApprovalManager:
                 for k, r in self._rules.items()
             },
         }
-        p.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+        write_json(p, data, ensure_ascii=False)
 
     def load(self, path: Path | None = None) -> None:
         """Load rules from disk."""
         p = path or (Path.home() / ".ccb" / "mcp_approval.json")
-        if not p.exists():
+        data = read_json(p)
+        if not isinstance(data, dict):
             return
         try:
-            data = json.loads(p.read_text())
             self._default_mode = ApprovalMode(data.get("default_mode", "ask"))
             self._auto_approve_servers = set(data.get("auto_approve_servers", []))
             for k, r in data.get("rules", {}).items():
@@ -161,7 +161,7 @@ class McpApprovalManager:
                     mode=ApprovalMode(r.get("mode", "ask")),
                     reason=r.get("reason", ""),
                 )
-        except (json.JSONDecodeError, OSError, KeyError):
+        except (OSError, KeyError, ValueError, TypeError):
             pass
 
 

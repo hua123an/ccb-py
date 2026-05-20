@@ -11,6 +11,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
 
+from ccb.json_store import read_json, write_json
+
 
 @dataclass
 class UsageEvent:
@@ -97,7 +99,7 @@ class AnalyticsTracker:
             return
         try:
             path = self._dir / f"{self._session.session_id}.json"
-            path.write_text(json.dumps(asdict(self._session), indent=2, default=str))
+            write_json(path, asdict(self._session), default=str)
         except OSError:
             pass
 
@@ -127,23 +129,22 @@ class AnalyticsTracker:
             for f in sorted(self._dir.glob("*.json"), reverse=True):
                 if f.name.startswith("events_"):
                     continue
-                try:
-                    data = json.loads(f.read_text())
-                    if data.get("start_time", 0) < cutoff:
-                        break
-                    count += 1
-                    total.messages += data.get("messages", 0)
-                    total.turns += data.get("turns", 0)
-                    total.input_tokens += data.get("input_tokens", 0)
-                    total.output_tokens += data.get("output_tokens", 0)
-                    total.cost_usd += data.get("cost_usd", 0)
-                    total.errors += data.get("errors", 0)
-                    for k, v in data.get("tools_used", {}).items():
-                        total.tools_used[k] = total.tools_used.get(k, 0) + v
-                    for k, v in data.get("commands_used", {}).items():
-                        total.commands_used[k] = total.commands_used.get(k, 0) + v
-                except (json.JSONDecodeError, OSError):
+                data = read_json(f)
+                if not isinstance(data, dict):
                     continue
+                if data.get("start_time", 0) < cutoff:
+                    break
+                count += 1
+                total.messages += data.get("messages", 0)
+                total.turns += data.get("turns", 0)
+                total.input_tokens += data.get("input_tokens", 0)
+                total.output_tokens += data.get("output_tokens", 0)
+                total.cost_usd += data.get("cost_usd", 0)
+                total.errors += data.get("errors", 0)
+                for k, v in data.get("tools_used", {}).items():
+                    total.tools_used[k] = total.tools_used.get(k, 0) + v
+                for k, v in data.get("commands_used", {}).items():
+                    total.commands_used[k] = total.commands_used.get(k, 0) + v
         except OSError:
             pass
         return {
@@ -264,23 +265,23 @@ class AnalyticsTracker:
         for f in sorted(self._dir.glob("*.json")):
             if f.name.startswith("events_"):
                 continue
-            try:
-                d = json.loads(f.read_text())
-                writer.writerow([
-                    d.get("session_id", ""),
-                    d.get("start_time", ""),
-                    d.get("messages", 0),
-                    d.get("turns", 0),
-                    d.get("input_tokens", 0),
-                    d.get("output_tokens", 0),
-                    d.get("cost_usd", 0),
-                    d.get("errors", 0),
-                ])
-            except (json.JSONDecodeError, OSError):
+            d = read_json(f)
+            if not isinstance(d, dict):
                 continue
+            writer.writerow([
+                d.get("session_id", ""),
+                d.get("start_time", ""),
+                d.get("messages", 0),
+                d.get("turns", 0),
+                d.get("input_tokens", 0),
+                d.get("output_tokens", 0),
+                d.get("cost_usd", 0),
+                d.get("errors", 0),
+            ])
 
         content = buf.getvalue()
         if output_path:
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
             Path(output_path).write_text(content)
         return content
 

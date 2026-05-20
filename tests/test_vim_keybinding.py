@@ -1,8 +1,6 @@
 """Tests for ccb.vim_mode and ccb.keybinding modules."""
-import json
 from pathlib import Path
 
-import pytest
 
 from ccb.vim_mode import VimMode, parse_vim_command, VIM_COMMANDS, get_vim_mode
 from ccb.keybinding import KeyBindingManager, KeyBinding, DEFAULT_BINDINGS

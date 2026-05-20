@@ -3,14 +3,7 @@ tips, policy_limits, agent_summary, session_transcript, tool_use_summary,
 upstream_proxy, jobs, memdir.
 """
 from __future__ import annotations
-import asyncio
-import json
-import os
-import time
-import tempfile
-from pathlib import Path
-from unittest.mock import MagicMock, patch, AsyncMock
-import pytest
+from unittest.mock import MagicMock, patch
 
 
 # ── AutoDream ──────────────────────────────────────────────────
@@ -29,7 +22,7 @@ class TestAutoDream:
             assert read_last_consolidated_at() == 0.0
 
     def test_read_write_lock(self, tmp_path):
-        from ccb.auto_dream import read_last_consolidated_at, _write_lock, _lock_path
+        from ccb.auto_dream import read_last_consolidated_at, _write_lock
         lp = tmp_path / "lock.json"
         with patch("ccb.auto_dream._lock_path", return_value=lp):
             _write_lock(12345.0)
@@ -57,17 +50,18 @@ class TestAutoDream:
         assert "/mem" in p
 
     def test_init(self):
-        from ccb.auto_dream import init_auto_dream, _initialized
+        from ccb.auto_dream import init_auto_dream
         init_auto_dream()
         from ccb.auto_dream import _initialized as inited
         assert inited is True
 
     def test_kill_dream_task(self):
         from ccb.auto_dream import DreamTask, _dream_tasks, kill_dream_task
-        _dream_tasks["x"] = DreamTask(task_id="x", status="running", prior_mtime=100.0)
-        assert kill_dream_task("x") is True
-        assert _dream_tasks["x"].status == "killed"
-        assert kill_dream_task("nope") is False
+        with patch("ccb.auto_dream._lock_path", return_value=MagicMock(write_text=lambda *_args, **_kwargs: None)):
+            _dream_tasks["x"] = DreamTask(task_id="x", status="running", prior_mtime=100.0)
+            assert kill_dream_task("x") is True
+            assert _dream_tasks["x"].status == "killed"
+            assert kill_dream_task("nope") is False
 
 
 # ── ContextCollapse ────────────────────────────────────────────
@@ -131,6 +125,15 @@ class TestContextCollapse:
         long = "x" * 200
         assert len(_truncate(long)) <= 180
 
+    def test_collapse_large_list_changes_view(self):
+        from ccb.api.base import Message, Role
+        from ccb.context_collapse import apply_collapses_if_needed, init_context_collapse
+
+        init_context_collapse()
+        msgs = [Message(role=Role.USER, content=f"message {i} " * 400, id=f"m{i}") for i in range(20)]
+        result = apply_collapses_if_needed(msgs, context_limit=1000)
+        assert len(result) < len(msgs)
+
 
 # ── MagicDocs ──────────────────────────────────────────────────
 
@@ -160,7 +163,7 @@ class TestMagicDocs:
         assert len(engine._conversation_context) == 1
 
     def test_get_pending(self):
-        from ccb.magic_docs import MagicDocsEngine, UPDATE_INTERVAL_SECONDS
+        from ccb.magic_docs import MagicDocsEngine
         engine = MagicDocsEngine()
         content = "# MAGIC DOC: Test\nContent"
         doc = engine.register_file_read("/tmp/test.md", content)

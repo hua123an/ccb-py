@@ -18,7 +18,6 @@ from ccb.pipe_ipc import (
     PipeIPC,
     PipeMessage,
     MSG_TASK_ASSIGN,
-    MSG_TASK_RESULT,
     MSG_HEARTBEAT,
     MSG_DISCOVER,
     VALID_MSG_TYPES,
@@ -219,7 +218,6 @@ class TestPipeIPCBroadcast:
         ipc._peers["b"] = pipe_b
 
         # Open read ends so writes don't block
-        import threading
 
         read_fds: list[int] = []
         for p in (pipe_a, pipe_b):
@@ -236,7 +234,7 @@ class TestPipeIPCBroadcast:
 # ---------------------------------------------------------------------------
 # peer_discovery tests
 # ---------------------------------------------------------------------------
-from ccb.peer_discovery import (
+from ccb.peer_discovery import (  # noqa: E402
     PeerDiscovery,
     PeerInfo,
     DEFAULT_PORT,
@@ -474,7 +472,7 @@ class TestPeerDiscoveryTwoInstances:
 # ---------------------------------------------------------------------------
 # pipes_panel tests
 # ---------------------------------------------------------------------------
-from ccb.pipes_panel import (
+from ccb.pipes_panel import (  # noqa: E402
     build_peers_table,
     show_pipes_panel,
     _status_style,

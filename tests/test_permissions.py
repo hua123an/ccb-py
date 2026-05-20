@@ -1,8 +1,6 @@
 """Tests for ccb.permissions module."""
-import json
-from pathlib import Path
 
-import pytest
+import json
 
 from ccb.permissions import (
     _match_pattern,
@@ -14,12 +12,10 @@ from ccb.permissions import (
     set_bypass_all,
     set_tool_filters,
     is_tool_allowed,
-    approve_tool,
     record_approval,
     needs_permission,
     add_workspace_rule,
     get_workspace_rules,
-    clear_workspace_rules,
 )
 
 
@@ -81,6 +77,16 @@ class TestWorkspaceRules:
         rule = {"tool": "file_write", "effect": "allow", "path": "/tmp/"}
         assert _match_workspace_rule(rule, "file_write", {"file_path": "/tmp/x.py"}) is True
         assert _match_workspace_rule(rule, "file_write", {"file_path": "/etc/x.py"}) is False
+
+    def test_workspace_rules_round_trip(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("ccb.permissions.claude_dir", lambda: tmp_path)
+        add_workspace_rule("/tmp/project", "bash", "allow", command_prefix="npm")
+
+        rules = get_workspace_rules("/tmp/project")
+        stored = json.loads(next((tmp_path / "approvals").glob("*.json")).read_text())
+
+        assert rules[0]["tool"] == "bash"
+        assert stored[0]["command_prefix"] == "npm"
 
 
 class TestSessionPermissions:

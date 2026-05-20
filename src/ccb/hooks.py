@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ccb.config import claude_dir
+from ccb.json_store import read_json
 
 
 HOOK_EVENTS = [
@@ -31,11 +32,8 @@ def load_hooks(cwd: str) -> dict[str, list[dict[str, Any]]]:
     hooks: dict[str, list[dict[str, Any]]] = {e: [] for e in HOOK_EVENTS}
 
     def _ingest(path: Path) -> None:
-        if not path.exists():
-            return
-        try:
-            data = json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError):
+        data = read_json(path)
+        if not isinstance(data, dict):
             return
         for event, entries in data.items():
             if event in hooks and isinstance(entries, list):

@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from ccb.json_store import read_json, write_json
+
 logger = logging.getLogger(__name__)
 
 # ── Configuration ──────────────────────────────────────────────
@@ -47,9 +49,9 @@ def _sessions_dir() -> Path:
 def read_last_consolidated_at() -> float:
     """Return epoch-seconds of last consolidation (0 if never)."""
     lp = _lock_path()
-    if lp.exists():
+    data = read_json(lp, default={})
+    if isinstance(data, dict):
         try:
-            data = json.loads(lp.read_text())
             return float(data.get("last_consolidated_at", 0))
         except Exception:
             pass
@@ -58,11 +60,14 @@ def read_last_consolidated_at() -> float:
 
 def _write_lock(ts: float) -> None:
     lp = _lock_path()
-    lp.parent.mkdir(parents=True, exist_ok=True)
-    lp.write_text(json.dumps({
+    payload = {
         "last_consolidated_at": ts,
         "pid": os.getpid(),
-    }))
+    }
+    if isinstance(lp, Path):
+        write_json(lp, payload)
+        return
+    lp.write_text(json.dumps(payload))
 
 
 def try_acquire_lock() -> float | None:
@@ -73,18 +78,19 @@ def try_acquire_lock() -> float | None:
     lp = _lock_path()
     prior = read_last_consolidated_at()
     if lp.exists():
-        try:
-            data = json.loads(lp.read_text())
-            pid = data.get("pid", 0)
-            if pid and pid != os.getpid():
-                # Check if locking process is still alive
-                try:
-                    os.kill(pid, 0)
-                    return None  # another process holds the lock
-                except ProcessLookupError:
-                    pass  # dead process, safe to take over
-        except Exception:
-            pass
+        data = read_json(lp, default={})
+        if isinstance(data, dict):
+            try:
+                pid = data.get("pid", 0)
+                if pid and pid != os.getpid():
+                    # Check if locking process is still alive
+                    try:
+                        os.kill(pid, 0)
+                        return None  # another process holds the lock
+                    except ProcessLookupError:
+                        pass  # dead process, safe to take over
+            except Exception:
+                pass
     _write_lock(time.time())
     return prior
 

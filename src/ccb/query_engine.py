@@ -6,8 +6,26 @@ Also handles ``/pipes`` for multi-step pipe chains.
 """
 from __future__ import annotations
 
+import os
 import sys
 from typing import AsyncIterator
+
+from ccb.api.base import Message
+from ccb.session import Session
+
+
+def _build_default_system_prompt(cwd: str, model: str, output_format: str = "text") -> str:
+    """Build a cwd-aware default system prompt for non-interactive queries."""
+    from ccb.prompts import get_system_prompt
+
+    base_prompt = get_system_prompt(cwd, model=model)
+    if output_format == "json":
+        format_instruction = "Respond with valid JSON only."
+    elif output_format == "markdown":
+        format_instruction = "Format your response in Markdown."
+    else:
+        format_instruction = "Be concise and direct."
+    return f"{base_prompt}\n\n# Response format\n{format_instruction}"
 
 
 async def run_query(
@@ -18,40 +36,52 @@ async def run_query(
     max_tokens: int = 4096,
     output_format: str = "text",  # text, json, markdown
     temperature: float | None = None,
-    tools: bool = False,
     cwd: str | None = None,
+    messages: list[Message] | None = None,
+    session: Session | None = None,
 ) -> str:
     """Run a single non-interactive query and return the response text."""
-    from ccb.api.base import Message, Role
+    from ccb.api.base import Role
     from ccb.api.router import create_provider
-    from ccb.config import load_config
+    from ccb.config import load_global_config
 
-    cfg = load_config()
+    cfg = load_global_config()
     model = model or cfg.get("model", "")
-    provider_name = provider_name or cfg.get("provider", "anthropic")
+    effective_cwd = cwd or os.getcwd()
 
-    provider = create_provider(provider_name, model=model, cwd=cwd)
+    provider = create_provider(model=model, provider_type=provider_name)
+    from ccb.cost_tracker import get_cost_state
+    cost = get_cost_state()
+    cost.set_model(model)
+    cost.start_turn()
 
-    messages = [Message(role=Role.USER, content=prompt)]
+    query_messages = messages or [Message(role=Role.USER, content=prompt)]
 
-    sys_prompt = system_prompt
-    if not sys_prompt:
-        if output_format == "json":
-            sys_prompt = "You are a helpful assistant. Respond with valid JSON only."
-        elif output_format == "markdown":
-            sys_prompt = "You are a helpful assistant. Format your response in Markdown."
-        else:
-            sys_prompt = "You are a helpful assistant. Be concise and direct."
+    sys_prompt = system_prompt or _build_default_system_prompt(
+        effective_cwd,
+        model,
+        output_format=output_format,
+    )
 
     full_text = ""
+    usage: dict[str, int] = {}
     async for event in provider.stream(
-        messages=messages,
+        messages=query_messages,
         tools=[],
         system=sys_prompt,
         max_tokens=max_tokens,
+        temperature=temperature,
     ):
         if event.type == "text":
             full_text += event.text
+        elif event.type == "done":
+            usage = event.usage or {}
+
+    if usage:
+        cost.add_usage(usage)
+        if session is not None:
+            session.add_usage(usage)
+    cost.end_turn()
 
     return full_text.strip()
 
@@ -62,30 +92,47 @@ async def run_query_streaming(
     provider_name: str | None = None,
     system_prompt: str | None = None,
     max_tokens: int = 4096,
+    temperature: float | None = None,
     cwd: str | None = None,
+    messages: list[Message] | None = None,
+    session: Session | None = None,
 ) -> AsyncIterator[str]:
     """Run a query with streaming output — yields text chunks."""
-    from ccb.api.base import Message, Role
+    from ccb.api.base import Role
     from ccb.api.router import create_provider
-    from ccb.config import load_config
+    from ccb.config import load_global_config
 
-    cfg = load_config()
+    cfg = load_global_config()
     model = model or cfg.get("model", "")
-    provider_name = provider_name or cfg.get("provider", "anthropic")
+    effective_cwd = cwd or os.getcwd()
 
-    provider = create_provider(provider_name, model=model, cwd=cwd)
-    messages = [Message(role=Role.USER, content=prompt)]
+    provider = create_provider(model=model, provider_type=provider_name)
+    query_messages = messages or [Message(role=Role.USER, content=prompt)]
+    from ccb.cost_tracker import get_cost_state
+    cost = get_cost_state()
+    cost.set_model(model)
+    cost.start_turn()
 
-    sys_prompt = system_prompt or "You are a helpful assistant. Be concise and direct."
+    sys_prompt = system_prompt or _build_default_system_prompt(effective_cwd, model)
 
+    usage: dict[str, int] = {}
     async for event in provider.stream(
-        messages=messages,
+        messages=query_messages,
         tools=[],
         system=sys_prompt,
         max_tokens=max_tokens,
+        temperature=temperature,
     ):
         if event.type == "text":
             yield event.text
+        elif event.type == "done":
+            usage = event.usage or {}
+
+    if usage:
+        cost.add_usage(usage)
+        if session is not None:
+            session.add_usage(usage)
+    cost.end_turn()
 
 
 async def pipe_mode(

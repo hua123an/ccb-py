@@ -1,6 +1,4 @@
 """Tests for ccb.bridge module."""
-import asyncio
-import json
 
 import pytest
 

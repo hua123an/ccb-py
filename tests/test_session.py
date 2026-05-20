@@ -1,7 +1,6 @@
 """Tests for ccb.session module."""
 import json
 import time
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -116,7 +115,7 @@ class TestSessionPersistence:
         sessions_dir.mkdir()
         for i in range(3):
             data = {"id": f"s{i}", "cwd": "/tmp", "model": "claude-3",
-                    "messages": [], "updated_at": time.time() - i * 100}
+                    "message_count": i + 1, "messages": [], "updated_at": time.time() - i * 100}
             (sessions_dir / f"s{i}.json").write_text(json.dumps(data))
 
         with patch("ccb.session.claude_dir", return_value=tmp_path):
@@ -124,6 +123,7 @@ class TestSessionPersistence:
             assert len(sessions) == 3
             # Should be sorted by modification time
             assert sessions[0]["id"] in ("s0", "s1", "s2")
+            assert {session["messages"] for session in sessions} == {1, 2, 3}
 
     def test_list_sessions_empty(self, tmp_path):
         with patch("ccb.session.claude_dir", return_value=tmp_path):

@@ -273,7 +273,13 @@ This does NOT apply to code or tool calls — those must remain complete and cor
 def _env_section(cwd: str, model: str = "") -> str:
     """Environment section — mirrors computeSimpleEnvInfo."""
     is_git = _find_git_root(cwd) is not None
-    uname = os.uname()
+    try:
+        uname = os.uname()
+    except PermissionError:
+        class _UName:
+            sysname = 'Darwin'
+            release = '24.6.0'
+        uname = _UName()
     shell = os.environ.get("SHELL", "unknown")
     shell_name = "zsh" if "zsh" in shell else ("bash" if "bash" in shell else shell)
 

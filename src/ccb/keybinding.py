@@ -5,9 +5,10 @@ resolving conflicts.
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
+
+from ccb.json_store import read_json, write_json
 
 
 @dataclass
@@ -61,22 +62,17 @@ class KeyBindingManager:
     def load_user_config(self, path: Path | None = None) -> int:
         """Load user keybinding overrides from JSON. Returns count loaded."""
         path = path or (Path.home() / ".ccb" / "keybindings.json")
-        if not path.exists():
-            return 0
-        try:
-            data = json.loads(path.read_text())
-            count = 0
-            for entry in data if isinstance(data, list) else []:
-                keys = entry.get("keys", "")
-                action = entry.get("action", "")
-                if keys and action:
-                    self.bind(keys, action,
-                              mode=entry.get("mode", "all"),
-                              description=entry.get("description", ""))
-                    count += 1
-            return count
-        except (json.JSONDecodeError, OSError):
-            return 0
+        data = read_json(path, default=[])
+        count = 0
+        for entry in data if isinstance(data, list) else []:
+            keys = entry.get("keys", "")
+            action = entry.get("action", "")
+            if keys and action:
+                self.bind(keys, action,
+                          mode=entry.get("mode", "all"),
+                          description=entry.get("description", ""))
+                count += 1
+        return count
 
     def save_user_config(self, path: Path | None = None) -> None:
         path = path or (Path.home() / ".ccb" / "keybindings.json")
@@ -84,8 +80,7 @@ class KeyBindingManager:
             {"keys": b.keys, "action": b.action, "mode": b.mode, "description": b.description}
             for b in self._bindings
         ]
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2))
+        write_json(path, data)
 
     def bind(self, keys: str, action: str, mode: str = "all", description: str = "") -> None:
         """Add or override a keybinding."""

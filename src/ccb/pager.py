@@ -11,7 +11,7 @@ from typing import Sequence
 from prompt_toolkit import Application
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.containers import HSplit, Window
+from prompt_toolkit.layout.containers import HSplit, Window, VSplit
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.styles import Style
@@ -118,39 +118,41 @@ async def show_pager(
         focusable=True,
     )
 
-    def _get_title_bar():
+    def _get_title_left():
+        left = f" {title} " if title else " "
+        return [("class:title", left)]
+
+    def _get_title_right():
         pos = scroll_offset[0] + 1
         total = line_count
         pct = int(scroll_offset[0] / max(1, line_count - 1) * 100) if line_count > 1 else 0
-        left = f" {title} " if title else " "
         right = f" [{pos}/{total}  {pct}%]  q/Esc close  ↑↓/jk scroll  g/G top/bottom "
-        # Pad to fill terminal width
-        try:
-            import shutil
-            cols = shutil.get_terminal_size().columns
-        except Exception:
-            cols = 120
-        pad = max(1, cols - len(left) - len(right))
-        return [
-            ("class:title", left),
-            ("class:title", " " * pad),
-            ("class:footer", right),
-        ]
-
-    title_control = FormattedTextControl(text=_get_title_bar)
+        return [("class:footer", right)]
 
     # Title bar: 1 row at top, full width
-    title_window = Window(
-        height=1,
-        content=title_control,
-        dont_extend_width=False,
-    )
+    title_window = VSplit([
+        Window(
+            content=FormattedTextControl(text=_get_title_left),
+            style="class:title",
+            dont_extend_width=True,
+        ),
+        Window(
+            content=FormattedTextControl(text=""),
+            style="class:title",
+        ),
+        Window(
+            content=FormattedTextControl(text=_get_title_right),
+            style="class:footer",
+            dont_extend_width=True,
+        ),
+    ], height=1)
 
     # Content: fills remaining space, scrollable
     content_window = Window(
         content=content_control,
         dont_extend_width=False,
         wrap_lines=False,
+        style="class:content",
         right_margins=[ScrollbarMargin()],
     )
 
@@ -165,7 +167,6 @@ async def show_pager(
         key_bindings=kb,
         style=PAGER_STYLE,
         full_screen=True,
-        alternate_screen=True,
         mouse_support=True,
     )
 
@@ -187,16 +188,22 @@ async def show_pager(
     from ccb.repl import get_active_repl
     _parent = get_active_repl()
     if _parent is not None:
-        _parent._nested_app_active = True
         try:
-            _parent.app.renderer.erase()
+            _parent.enter_nested_overlay()
         except Exception:
             pass
 
     try:
         await app.run_async()
     finally:
+        try:
+            app.renderer.erase()
+            app.output.erase_screen()
+            app.output.cursor_goto(0, 0)
+            app.output.flush()
+        except Exception:
+            pass
         if _parent is not None:
-            _parent._nested_app_active = False
+            _parent.exit_nested_overlay()
         from ccb.select_ui import _restore_parent_repl
         await _restore_parent_repl()

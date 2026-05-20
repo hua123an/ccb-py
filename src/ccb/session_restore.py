@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ccb.config import claude_dir
+from ccb.json_store import read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -461,19 +462,19 @@ class SessionRestorer:
         """Write state to disk."""
         path = self._state_path(state.session_id)
         try:
-            path.write_text(json.dumps(state.to_dict(), indent=2, ensure_ascii=False))
+            write_json(path, state.to_dict(), ensure_ascii=False)
         except OSError:
             logger.exception("Failed to persist session state for %s", state.session_id)
 
     def _load_from_disk(self, session_id: str) -> SessionState | None:
         """Load state from disk."""
         path = self._state_path(session_id)
-        if not path.exists():
+        data = read_json(path)
+        if not isinstance(data, dict):
             return None
         try:
-            data = json.loads(path.read_text())
             return SessionState.from_dict(data)
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except (KeyError, TypeError):
             return None
 
     def list_stored_sessions(self) -> list[dict[str, Any]]:
@@ -481,15 +482,14 @@ class SessionRestorer:
         storage = self._ensure_storage_dir()
         sessions: list[dict[str, Any]] = []
         for f in sorted(storage.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-            try:
-                data = json.loads(f.read_text())
-                sessions.append({
-                    "session_id": data.get("session_id", f.stem),
-                    "ide_type": data.get("ide_type", ""),
-                    "updated_at": data.get("updated_at", 0),
-                })
-            except Exception:
+            data = read_json(f)
+            if not isinstance(data, dict):
                 continue
+            sessions.append({
+                "session_id": data.get("session_id", f.stem),
+                "ide_type": data.get("ide_type", ""),
+                "updated_at": data.get("updated_at", 0),
+            })
         return sessions
 
     def delete_stored_session(self, session_id: str) -> bool:

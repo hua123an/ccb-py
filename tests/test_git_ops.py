@@ -1,7 +1,5 @@
 """Tests for ccb.git_ops module."""
-import os
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest

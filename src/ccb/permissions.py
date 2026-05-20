@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
-import json
 import re
 from pathlib import Path
 from typing import Any, Literal
 
 from ccb.config import claude_dir, get_permission_mode, get_settings
+from ccb.json_store import read_json, write_json
 
 # ── Types ──
 ApprovalChoice = Literal[
@@ -56,17 +56,13 @@ def _workspace_key(cwd: str) -> str:
 
 def _load_workspace_rules(cwd: str) -> list[dict[str, Any]]:
     path = _approvals_dir() / f"{_workspace_key(cwd)}.json"
-    if not path.exists():
-        return []
-    try:
-        return json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return []
+    data = read_json(path, default=[])
+    return data if isinstance(data, list) else []
 
 
 def _save_workspace_rules(cwd: str, rules: list[dict[str, Any]]) -> None:
     path = _approvals_dir() / f"{_workspace_key(cwd)}.json"
-    path.write_text(json.dumps(rules, indent=2, ensure_ascii=False))
+    write_json(path, rules, ensure_ascii=False)
 
 
 def add_workspace_rule(cwd: str, tool_name: str, effect: str,

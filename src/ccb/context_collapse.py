@@ -21,7 +21,6 @@ KEEP_HEAD_MESSAGES = 2
 KEEP_TAIL_MESSAGES = 8
 EMERGENCY_KEEP_TAIL_MESSAGES = 4
 MIN_COLLAPSIBLE_MESSAGES = 6
-COLLAPSE_TRIGGER_RATIO = 0.72
 SUMMARY_LINE_LIMIT = 12
 
 
@@ -264,7 +263,9 @@ def apply_collapses_if_needed(
     total_chars = sum(len(getattr(m, "content", "") or "") for m in projected)
     est_tokens = total_chars // 4
 
-    threshold = int(context_limit * COLLAPSE_TRIGGER_RATIO)
+    from ccb.context_policy import get_context_policy
+
+    threshold = int(context_limit * get_context_policy().collapse_trigger_ratio)
     if est_tokens < threshold:
         _health.total_empty_spawns += 1
         if _health.total_empty_spawns >= 3:

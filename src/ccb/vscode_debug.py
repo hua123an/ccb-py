@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ccb.json_store import write_json
+
 
 @dataclass
 class Breakpoint:
@@ -487,7 +489,7 @@ def generate_launch_json(project_dir: str = ".vscode") -> Path:
         ],
     }
 
-    launch_path.write_text(json.dumps(config, indent=2) + "\n")
+    write_json(launch_path, config, newline=True)
     return launch_path
 
 

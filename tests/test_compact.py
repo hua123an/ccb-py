@@ -1,5 +1,4 @@
 """Tests for ccb.compact module."""
-import pytest
 
 from ccb.compact import (
     get_compact_prompt,

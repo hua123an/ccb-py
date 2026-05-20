@@ -1,7 +1,7 @@
 """Tests for ccb.task_manager module."""
 import asyncio
 import pytest
-from ccb.task_manager import TaskManager, TaskStatus, Task, TaskResult
+from ccb.task_manager import TaskManager, TaskStatus, TaskResult
 
 
 @pytest.fixture

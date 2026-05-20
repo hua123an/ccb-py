@@ -34,7 +34,7 @@ class AgentInstance:
 class Coordinator:
     """Orchestrates multiple agents working on parts of a problem."""
 
-    def __init__(self, max_agents: int = 5):
+    def __init__(self, max_agents: int = 2):
         self._agents: dict[str, AgentInstance] = {}
         self._max_agents = max_agents
         self._semaphore = asyncio.Semaphore(max_agents)

@@ -1,15 +1,12 @@
 """Tests for ComputerUseTool and ChromeUseTool."""
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
-import platform
 from unittest.mock import AsyncMock, MagicMock, patch, mock_open
 
 import pytest
 
-from ccb.tools.base import ToolResult
 
 
 # ======================================================================
@@ -73,7 +70,7 @@ class TestComputerUseTool:
 
         with (
             patch("ccb.tools.computer_use.platform") as mock_platform,
-            patch("ccb.tools.computer_use.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
+            patch("ccb.tools.computer_use.asyncio.create_subprocess_exec", return_value=mock_proc),
             patch("builtins.open", mock_open(read_data=fake_png)),
             patch("ccb.tools.computer_use.os.unlink"),
         ):

@@ -1,11 +1,8 @@
 """Tests for remote_control and vscode_debug modules."""
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
 
 import pytest
@@ -120,7 +117,6 @@ class TestRemoteControlServer:
     @pytest.mark.asyncio
     async def test_handle_index_unauthorized(self):
         """Index returns 401 when auth is required and missing."""
-        from aiohttp import web
         from ccb.remote_control import RemoteControlServer
         srv = RemoteControlServer(token="secret")
         request = MagicMock()
@@ -131,7 +127,6 @@ class TestRemoteControlServer:
 
     @pytest.mark.asyncio
     async def test_handle_index_authorized(self):
-        from aiohttp import web
         from ccb.remote_control import RemoteControlServer
         srv = RemoteControlServer(token="secret")
         request = MagicMock()
@@ -154,6 +149,19 @@ class TestRemoteControlServer:
         body = json.loads(resp.body)
         assert "model" in body
         assert "uptime" in body
+
+    @pytest.mark.asyncio
+    async def test_handle_websocket_rejects_unauthorized(self):
+        from ccb.remote_control import RemoteControlServer
+
+        srv = RemoteControlServer(token="secret")
+        request = MagicMock()
+        request.headers = {}
+        request.query = {}
+
+        resp = await srv._handle_websocket(request)
+
+        assert resp.status == 401
 
     @pytest.mark.asyncio
     async def test_handle_list_sessions_empty(self):
@@ -206,6 +214,58 @@ class TestRemoteControlServer:
         assert resp.status == 400
 
     @pytest.mark.asyncio
+    async def test_handle_send_message_uses_session_cwd(self):
+        from ccb.remote_control import RemoteControlServer
+        srv = RemoteControlServer()
+        srv.register_session("test", model="m", cwd="/tmp/remote-project")
+        request = MagicMock()
+        request.headers = {}
+        request.query = {}
+        request.match_info = {"sid": "test"}
+        request.json = AsyncMock(return_value={"message": "hello"})
+        with (
+            patch("ccb.query_engine.run_query", AsyncMock(return_value="ok")) as run_query,
+            patch("ccb.session.Session.save") as save,
+        ):
+            resp = await srv._handle_send_message(request)
+        assert resp.status == 200
+        _, kwargs = run_query.await_args
+        assert kwargs["model"] == "m"
+        assert kwargs["cwd"] == "/tmp/remote-project"
+        assert [m.content for m in kwargs["messages"]] == ["hello"]
+        save.assert_called_once()
+        body = json.loads(resp.body)
+        assert [m["content"] for m in body["messages"]] == ["hello", "ok"]
+        assert body["session_id"] == "test"
+        assert srv._active_sessions["test"]["messages"] == 2
+
+    @pytest.mark.asyncio
+    async def test_handle_send_message_falls_back_to_persisted_session_context(self):
+        from ccb.remote_control import RemoteControlServer
+        from ccb.session import Session
+        srv = RemoteControlServer()
+        request = MagicMock()
+        request.headers = {}
+        request.query = {}
+        request.match_info = {"sid": "persisted"}
+        request.json = AsyncMock(return_value={"message": "hello"})
+        persisted = Session(id="persisted", cwd="/tmp/persisted-project", model="persisted-model")
+        with (
+            patch("ccb.session.Session.load", side_effect=[persisted, persisted]),
+            patch("ccb.query_engine.run_query", AsyncMock(return_value="ok")) as run_query,
+            patch("ccb.session.Session.save") as save,
+        ):
+            resp = await srv._handle_send_message(request)
+        assert resp.status == 200
+        _, kwargs = run_query.await_args
+        assert kwargs["model"] == "persisted-model"
+        assert kwargs["cwd"] == "/tmp/persisted-project"
+        assert [m.content for m in kwargs["messages"]] == ["hello"]
+        save.assert_called_once()
+        body = json.loads(resp.body)
+        assert body["messages"][-1]["content"] == "ok"
+
+    @pytest.mark.asyncio
     async def test_handle_get_messages_session_not_found(self):
         from ccb.remote_control import RemoteControlServer
         srv = RemoteControlServer()
@@ -217,6 +277,57 @@ class TestRemoteControlServer:
             resp = await srv._handle_get_messages(request)
         body = json.loads(resp.body)
         assert body["messages"] == []
+        assert srv._active_sessions == {}
+
+    @pytest.mark.asyncio
+    async def test_handle_send_message_creates_new_session_without_sid(self):
+        from ccb.remote_control import RemoteControlServer
+        srv = RemoteControlServer()
+        request = MagicMock()
+        request.headers = {}
+        request.query = {}
+        request.match_info = {}
+        request.json = AsyncMock(return_value={"message": "hello"})
+        with (
+            patch("ccb.query_engine.run_query", AsyncMock(return_value="ok")) as run_query,
+            patch("ccb.session.Session.save") as save,
+        ):
+            resp = await srv._handle_send_message(request)
+        assert resp.status == 200
+        _, kwargs = run_query.await_args
+        assert kwargs["model"] is None
+        assert kwargs["cwd"] == os.getcwd()
+        assert [m.content for m in kwargs["messages"]] == ["hello"]
+        save.assert_called_once()
+        body = json.loads(resp.body)
+        assert body["session_id"]
+        assert [m["content"] for m in body["messages"]] == ["hello", "ok"]
+
+    @pytest.mark.asyncio
+    async def test_handle_send_message_passes_full_session_history_to_query(self):
+        from ccb.remote_control import RemoteControlServer
+        from ccb.session import Session
+
+        srv = RemoteControlServer()
+        persisted = Session(id="persisted", cwd="/tmp/persisted-project", model="persisted-model")
+        persisted.add_user_message("first")
+        persisted.add_assistant_message("reply")
+        request = MagicMock()
+        request.headers = {}
+        request.query = {}
+        request.match_info = {"sid": "persisted"}
+        request.json = AsyncMock(return_value={"message": "hello"})
+
+        with (
+            patch("ccb.session.Session.load", side_effect=[persisted, persisted]),
+            patch("ccb.query_engine.run_query", AsyncMock(return_value="ok")) as run_query,
+            patch("ccb.session.Session.save"),
+        ):
+            resp = await srv._handle_send_message(request)
+
+        assert resp.status == 200
+        _, kwargs = run_query.await_args
+        assert [m.content for m in kwargs["messages"]] == ["first", "reply", "hello"]
 
     @pytest.mark.asyncio
     async def test_handle_get_messages_with_session(self):
@@ -238,8 +349,39 @@ class TestRemoteControlServer:
         assert len(body["messages"]) == 1
         assert body["messages"][0]["content"] == "hello"
 
+    def test_load_session_fills_missing_metadata_from_persisted_session(self):
+        from ccb.remote_control import RemoteControlServer
+        from ccb.session import Session
+
+        srv = RemoteControlServer()
+        persisted = Session(id="s1", cwd="/tmp/project", model="test-model")
+
+        with patch("ccb.session.Session.load", return_value=persisted):
+            session = srv._load_session("s1")
+
+        assert session is persisted
+        assert srv._active_sessions["s1"]["cwd"] == "/tmp/project"
+        assert srv._active_sessions["s1"]["model"] == "test-model"
+
+    def test_register_session_metadata_is_pruned_when_over_limit(self):
+        from ccb.remote_control import RemoteControlServer
+
+        srv = RemoteControlServer()
+        for i in range(205):
+            srv._active_sessions[f"s{i}"] = {"id": f"s{i}", "updated_at": i, "created_at": i}
+
+        from ccb.session import Session
+        session = Session(id="latest", cwd="/tmp/project", model="m")
+        from ccb.session_runtime import remember_active_session, prune_session_locks
+
+        remember_active_session(session, srv._active_sessions, max_entries=200)
+        prune_session_locks(srv._session_locks, active_session_ids=set(srv._active_sessions), max_entries=200)
+
+        assert "latest" in srv._active_sessions
+        assert len(srv._active_sessions) == 200
+
     def test_singleton(self):
-        from ccb.remote_control import get_remote_server, _server
+        from ccb.remote_control import get_remote_server
         # Reset singleton for test
         import ccb.remote_control as rc
         rc._server = None

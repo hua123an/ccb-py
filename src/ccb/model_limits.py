@@ -13,8 +13,11 @@ Lookup order in ``get_context_limit``:
 """
 from __future__ import annotations
 
-import json
+import time
 from pathlib import Path
+
+from ccb.config import get_active_account
+from ccb.json_store import read_json
 
 
 DEFAULT_CONTEXT_LIMIT = 128_000
@@ -182,13 +185,17 @@ def _load_user_overrides() -> dict[str, int]:
     """
     try:
         path = Path.home() / ".ccb" / "settings.json"
-        if not path.exists():
+        data = read_json(path, default={})
+        if not isinstance(data, dict):
             return {}
-        data = json.loads(path.read_text())
         overrides = data.get("modelContextLimits") or {}
         return {str(k).lower(): int(v) for k, v in overrides.items() if isinstance(v, (int, float))}
     except Exception:
         return {}
+
+
+_ACCOUNT_CACHE_TTL = 5.0  # seconds
+_ACCOUNT_CACHE: dict[str, tuple[float, int | None]] = {}
 
 
 def _load_account_override(model: str) -> int | None:
@@ -197,20 +204,32 @@ def _load_account_override(model: str) -> int | None:
     Schema in accounts.json:
         {"accounts": {"name": {..., "contextLimit": 400000}}}
     """
+    now = time.monotonic()
+    cache_key = f"model:{model}"
+
+    # Return cached value if fresh
+    if cache_key in _ACCOUNT_CACHE:
+        ts, val = _ACCOUNT_CACHE[cache_key]
+        if now - ts < _ACCOUNT_CACHE_TTL:
+            return val
+
     try:
-        from ccb.config import get_active_account
         acct = get_active_account()
         if acct and isinstance(acct.get("contextLimit"), (int, float)):
-            return int(acct["contextLimit"])
-        # Also support per-model override inside the account
-        model_limits = acct.get("modelContextLimits") if acct else None
-        if isinstance(model_limits, dict):
-            v = model_limits.get(model) or model_limits.get(model.lower())
-            if isinstance(v, (int, float)):
-                return int(v)
+            result = int(acct["contextLimit"])
+        else:
+            # Also support per-model override inside the account
+            model_limits = acct.get("modelContextLimits") if acct else None
+            if isinstance(model_limits, dict):
+                v = model_limits.get(model) or model_limits.get(model.lower())
+                result = int(v) if isinstance(v, (int, float)) else None
+            else:
+                result = None
     except Exception:
-        pass
-    return None
+        result = None
+
+    _ACCOUNT_CACHE[cache_key] = (now, result)
+    return result
 
 
 def get_context_limit(model: str) -> int:

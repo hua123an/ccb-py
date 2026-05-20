@@ -12,13 +12,14 @@ Snapshots are stored in ~/.ccb/snapshots/<snapshot_id>.json
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from ccb.json_store import read_json, write_json
 
 
 @dataclass
@@ -197,27 +198,29 @@ class SnapshotManager:
     def _save(self, snapshot: WorkspaceSnapshot) -> None:
         """Save snapshot to storage."""
         path = self._storage / f"{snapshot.id}.json"
-        path.write_text(json.dumps(snapshot.to_dict(), indent=2))
+        write_json(path, snapshot.to_dict())
 
     def load(self, snapshot_id: str) -> WorkspaceSnapshot | None:
         """Load a snapshot from storage."""
         path = self._storage / f"{snapshot_id}.json"
-        if not path.exists():
+        data = read_json(path)
+        if not isinstance(data, dict):
             return None
         try:
-            data = json.loads(path.read_text())
             return WorkspaceSnapshot.from_dict(data)
-        except (json.JSONDecodeError, TypeError):
+        except TypeError:
             return None
 
     def list_all(self) -> list[WorkspaceSnapshot]:
         """List all snapshots."""
         snapshots = []
         for path in sorted(self._storage.glob("snap_*.json"), reverse=True):
+            data = read_json(path)
+            if not isinstance(data, dict):
+                continue
             try:
-                data = json.loads(path.read_text())
                 snapshots.append(WorkspaceSnapshot.from_dict(data))
-            except (json.JSONDecodeError, TypeError):
+            except TypeError:
                 continue
         return snapshots
 
@@ -234,7 +237,7 @@ class SnapshotManager:
 
         Returns result dict with status and any errors.
         """
-        results = {"success": True, "steps": []}
+        results: dict[str, Any] = {"success": True, "steps": []}
         git_root = self._find_git_root(cwd) or cwd
 
         # Check if we're in the right repo
@@ -271,7 +274,7 @@ class SnapshotManager:
         Returns dict showing what's changed.
         """
         git_root = self._find_git_root(cwd) or cwd
-        changes = {
+        changes: dict[str, Any] = {
             "git_branch_changed": False,
             "git_commit_changed": False,
             "deps_changed": [],

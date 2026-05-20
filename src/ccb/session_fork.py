@@ -7,12 +7,13 @@ experimentation without affecting the original conversation.
 from __future__ import annotations
 
 import copy
-import json
 import time
 from pathlib import Path
 from typing import Any
 
 from ccb.session import Message, Session
+from ccb.api.base import Role
+from ccb.json_store import read_json, write_json
 
 
 def fork_session(
@@ -41,8 +42,8 @@ def fork_session(
         new_msg = Message(
             role=msg.role,
             content=msg.content,
-            tool_calls=copy.deepcopy(msg.tool_calls) if msg.tool_calls else None,
-            tool_results=copy.deepcopy(msg.tool_results) if msg.tool_results else None,
+            tool_calls=copy.deepcopy(msg.tool_calls) if msg.tool_calls else [],
+            tool_results=copy.deepcopy(msg.tool_results) if msg.tool_results else [],
         )
         new_session.messages.append(new_msg)
 
@@ -50,9 +51,9 @@ def fork_session(
     new_session.total_input_tokens = session.total_input_tokens
     new_session.total_output_tokens = session.total_output_tokens
 
-    # Set label
-    if label:
-        new_session._label = label
+    # Label unused
+    # if label:
+    #     new_session._label = label
 
     return new_session
 
@@ -101,27 +102,26 @@ def save_fork(
         "messages": forked_session._to_dict()["messages"],
     }
 
-    fork_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    write_json(fork_path, data, ensure_ascii=False)
     return fork_path
 
 
 def load_fork(fork_name: str) -> Session | None:
     """Load a forked session from disk."""
     fork_path = Path.home() / ".ccb" / "sessions" / "forks" / f"{fork_name}.json"
-    if not fork_path.exists():
+    data = read_json(fork_path)
+    if not isinstance(data, dict):
         return None
-
     try:
-        data = json.loads(fork_path.read_text())
         session = Session(cwd=data.get("cwd", "."))
         for msg_data in data.get("messages", []):
             msg = Message(
-                role=session._role_from_str(msg_data.get("role", "user")),
+                role=Role(msg_data.get("role", "user")),
                 content=msg_data.get("content", ""),
             )
             session.messages.append(msg)
         return session
-    except (json.JSONDecodeError, OSError, KeyError):
+    except (OSError, KeyError, ValueError):
         return None
 
 
@@ -134,16 +134,15 @@ def list_forks() -> list[dict[str, Any]]:
     result = []
     for f in sorted(forks_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
         if f.suffix == ".json":
-            try:
-                data = json.loads(f.read_text())
-                result.append({
-                    "name": data.get("name", f.stem),
-                    "created_at": data.get("created_at", 0),
-                    "source_messages": data.get("source_messages", 0),
-                    "fork_messages": data.get("fork_messages", 0),
-                    "path": str(f),
-                })
-            except (json.JSONDecodeError, OSError):
-                pass
+            data = read_json(f)
+            if not isinstance(data, dict):
+                continue
+            result.append({
+                "name": data.get("name", f.stem),
+                "created_at": data.get("created_at", 0),
+                "source_messages": data.get("source_messages", 0),
+                "fork_messages": data.get("fork_messages", 0),
+                "path": str(f),
+            })
 
     return result

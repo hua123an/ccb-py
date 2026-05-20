@@ -6,12 +6,8 @@ tool_decorator, code_interpreter, image_gen, agent_defs.
 from __future__ import annotations
 
 import asyncio
-import json
-import time
-from pathlib import Path
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 # ── Guardrails ──────────────────────────────────────────────────
@@ -97,7 +93,7 @@ class TestGuardrails:
         g.remove_input("min_length")
 
     def test_disable_rule(self):
-        from ccb.guardrails import get_guardrails, InputGuardrail, GuardrailResult
+        from ccb.guardrails import get_guardrails
         g = get_guardrails()
 
         # Disable no_injection
@@ -124,7 +120,7 @@ class TestCompaction:
         assert estimate_tokens("a" * 100) == 25
 
     def test_should_compact_false(self):
-        from ccb.compaction import should_compact, CompactionConfig
+        from ccb.compaction import should_compact
         from ccb.session import Session
         s = Session()
         s.add_user_message("hello")
@@ -155,6 +151,21 @@ class TestCompaction:
         cfg = CompactionConfig(keep_recent=10)
         result = compact_messages(msgs, cfg)
         assert len(result) == 3
+
+    def test_compact_messages_counts_tool_results(self):
+        from ccb.api.base import ToolResult
+        from ccb.compaction import compact_messages, CompactionConfig
+        from ccb.session import Message, Role
+
+        msgs = [
+            Message(role=Role.USER, content="question"),
+            Message(role=Role.ASSISTANT, content="running tool"),
+            Message(role=Role.USER, tool_results=[ToolResult(tool_use_id="t1", content="output")]),
+            Message(role=Role.USER, content="followup"),
+        ]
+        cfg = CompactionConfig(keep_recent=1)
+        result = compact_messages(msgs, cfg)
+        assert "1 tool results" in result[0].content
 
 
 # ── MCP Approval ────────────────────────────────────────────────
@@ -358,14 +369,14 @@ class TestSessionFork:
         assert len(forked.messages) == 2  # q1 + a1
 
     def test_save_and_list_forks(self, tmp_path):
-        from ccb.session_fork import save_fork, list_forks, fork_session
+        from ccb.session_fork import fork_session
         from ccb.session import Session
         with patch("ccb.session_fork.Path") as mock_path:
             mock_path.return_value = tmp_path
             mock_path.home.return_value = tmp_path
             s = Session()
             s.add_user_message("test")
-            forked = fork_session(s)
+            fork_session(s)
             # save_fork would need the real path, skip actual save in test
 
 
@@ -399,9 +410,7 @@ class TestToolDecorator:
         async def echo(input: dict) -> dict:
             return {"echo": input["text"]}
 
-        result = asyncio.get_event_loop().run_until_complete(
-            echo._ccb_tool.execute({"text": "hello"}, ".")
-        )
+        result = asyncio.run(echo._ccb_tool.execute({"text": "hello"}, "."))
         assert result.is_error is False
         assert "hello" in result.output
 
@@ -416,9 +425,7 @@ class TestToolDecorator:
         async def fail(input: dict) -> dict:
             return {"error": "something went wrong"}
 
-        result = asyncio.get_event_loop().run_until_complete(
-            fail._ccb_tool.execute({}, ".")
-        )
+        result = asyncio.run(fail._ccb_tool.execute({}, "."))
         assert result.is_error is True
 
     def test_decorated_tool_exception(self):
@@ -432,9 +439,7 @@ class TestToolDecorator:
         async def crash(input: dict) -> dict:
             raise ValueError("boom")
 
-        result = asyncio.get_event_loop().run_until_complete(
-            crash._ccb_tool.execute({}, ".")
-        )
+        result = asyncio.run(crash._ccb_tool.execute({}, "."))
         assert result.is_error is True
         assert "boom" in result.output
 
@@ -532,26 +537,20 @@ class TestCodeInterpreterTool:
     def test_empty_code(self):
         from ccb.tools.code_interpreter import CodeInterpreterTool
         t = CodeInterpreterTool()
-        result = asyncio.get_event_loop().run_until_complete(
-            t.execute({"code": ""}, ".")
-        )
+        result = asyncio.run(t.execute({"code": ""}, "."))
         assert result.is_error is True
 
     def test_execute_simple(self):
         from ccb.tools.code_interpreter import CodeInterpreterTool
         t = CodeInterpreterTool()
-        result = asyncio.get_event_loop().run_until_complete(
-            t.execute({"code": "print(2 + 2)"}, ".")
-        )
+        result = asyncio.run(t.execute({"code": "print(2 + 2)"}, "."))
         assert result.is_error is False
         assert "4" in result.output
 
     def test_execute_error(self):
         from ccb.tools.code_interpreter import CodeInterpreterTool
         t = CodeInterpreterTool()
-        result = asyncio.get_event_loop().run_until_complete(
-            t.execute({"code": "1/0"}, ".")
-        )
+        result = asyncio.run(t.execute({"code": "1/0"}, "."))
         assert result.is_error is True
         assert "ZeroDivisionError" in result.output or "division" in result.output
 
@@ -569,9 +568,7 @@ class TestImageGenerationTool:
     def test_empty_prompt(self):
         from ccb.tools.image_gen import ImageGenerationTool
         t = ImageGenerationTool()
-        result = asyncio.get_event_loop().run_until_complete(
-            t.execute({"prompt": ""}, ".")
-        )
+        result = asyncio.run(t.execute({"prompt": ""}, "."))
         assert result.is_error is True
 
     def test_no_api_key(self):
@@ -579,9 +576,7 @@ class TestImageGenerationTool:
         t = ImageGenerationTool()
         with patch.dict("os.environ", {"OPENAI_API_KEY": ""}, clear=False):
             with patch("ccb.config.get_active_account", return_value=None):
-                result = asyncio.get_event_loop().run_until_complete(
-                    t.execute({"prompt": "a cat"}, ".")
-                )
+                result = asyncio.run(t.execute({"prompt": "a cat"}, "."))
                 assert result.is_error is True
                 assert "API key" in result.output
 

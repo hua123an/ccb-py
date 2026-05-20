@@ -1,10 +1,6 @@
 """Tests for ccb.state and ccb.proactive modules."""
-import json
-import time
-from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from ccb.state import AppState, StateManager, get_state
 from ccb.proactive import Suggestion, ProactiveEngine, get_proactive_engine
@@ -103,6 +99,15 @@ class TestStateManager:
         mgr2.load(path)
         assert mgr2.get("model") == "saved-model"
         assert mgr2.get("cwd") == "/saved/path"
+
+    def test_save_creates_parent_directory(self, tmp_path):
+        mgr = StateManager()
+        mgr.set("model", "saved-model")
+        path = tmp_path / "nested" / "state.json"
+
+        mgr.save(path)
+
+        assert path.exists()
 
     def test_load_nonexistent(self, tmp_path):
         mgr = StateManager()

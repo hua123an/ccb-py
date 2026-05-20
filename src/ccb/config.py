@@ -1,10 +1,11 @@
 """Configuration management. Reads from env vars, ~/.ccb.json, and ~/.ccb/settings.json."""
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from typing import Any
+
+from ccb.json_store import read_json, write_json
 
 _global_config: dict[str, Any] = {}
 _project_configs: dict[str, dict[str, Any]] = {}
@@ -45,11 +46,11 @@ def project_config_key(cwd: str) -> str:
 def load_global_config() -> dict[str, Any]:
     global _global_config
     p = claude_json_path()
-    if p.exists():
-        try:
-            _global_config = json.loads(p.read_text())
-        except (json.JSONDecodeError, OSError):
-            _global_config = {}
+    data = read_json(p, default={})
+    if isinstance(data, dict):
+        _global_config = data
+    else:
+        _global_config = {}
     return _global_config
 
 
@@ -62,7 +63,7 @@ def get_global_config() -> dict[str, Any]:
 def save_global_config(cfg: dict[str, Any]) -> None:
     global _global_config
     _global_config = cfg
-    claude_json_path().write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
+    write_json(claude_json_path(), cfg, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -70,12 +71,8 @@ def save_global_config(cfg: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 def load_settings() -> dict[str, Any]:
     p = settings_path()
-    if p.exists():
-        try:
-            return json.loads(p.read_text())
-        except (json.JSONDecodeError, OSError):
-            return {}
-    return {}
+    data = read_json(p, default={})
+    return data if isinstance(data, dict) else {}
 
 
 def get_settings() -> dict[str, Any]:
@@ -84,8 +81,7 @@ def get_settings() -> dict[str, Any]:
 
 
 def save_settings(settings: dict[str, Any]) -> None:
-    settings_path().parent.mkdir(parents=True, exist_ok=True)
-    settings_path().write_text(json.dumps(settings, indent=2, ensure_ascii=False))
+    write_json(settings_path(), settings, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -114,12 +110,8 @@ def accounts_path() -> Path:
 
 def load_accounts() -> dict[str, Any]:
     p = accounts_path()
-    if p.exists():
-        try:
-            return json.loads(p.read_text())
-        except (json.JSONDecodeError, OSError):
-            return {"accounts": {}}
-    return {"accounts": {}}
+    data = read_json(p, default={"accounts": {}})
+    return data if isinstance(data, dict) else {"accounts": {}}
 
 
 def get_active_account() -> dict[str, Any] | None:
@@ -155,7 +147,7 @@ def switch_account(name: str, model: str | None = None) -> bool:
         # Switching to a different account: clear activeModel so defaultModel takes effect
         store.pop("activeModel", None)
     # If same account and no model override, keep activeModel as-is
-    accounts_path().write_text(json.dumps(store, indent=2, ensure_ascii=False) + "\n")
+    write_json(accounts_path(), store, ensure_ascii=False, newline=True)
     global _active_account
     _active_account = None  # Force reload
     return True
@@ -165,14 +157,16 @@ def switch_account(name: str, model: str | None = None) -> bool:
 # API key / model resolution
 # ---------------------------------------------------------------------------
 def get_api_key() -> str:
-    """Resolve API key: env var > active account > settings > empty."""
+    """Resolve API key: active account > env var > settings > empty."""
+    acct = get_active_account()
+    if acct:
+        key = acct.get("apiKey", "")
+        if key:
+            return key
     for env_key in ("ANTHROPIC_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "OPENAI_API_KEY"):
         val = os.environ.get(env_key, "")
         if val:
             return val
-    acct = get_active_account()
-    if acct:
-        return acct.get("apiKey", "")
     settings = load_settings()
     return settings.get("apiKey", "")
 
@@ -195,23 +189,30 @@ def get_api_key_hint() -> str:
 
 
 def get_model() -> str:
-    """Resolve model: env var > active account model > settings > default."""
-    if m := os.environ.get("ANTHROPIC_MODEL"):
-        return m
-    if m := os.environ.get("OPENAI_MODEL"):
-        return m
+    """Resolve model: active account model > env var > settings > default."""
     acct = get_active_account()
     if acct:
         active_model = acct.get("_activeModel")
         if active_model:
             return active_model
-        return acct.get("defaultModel", "")
+        default = acct.get("defaultModel", "")
+        if default:
+            return default
+    if m := os.environ.get("ANTHROPIC_MODEL"):
+        return m
+    if m := os.environ.get("OPENAI_MODEL"):
+        return m
     settings = load_settings()
     return settings.get("model", "claude-sonnet-4-20250514")
 
 
 def get_base_url() -> str | None:
-    """Resolve base URL: env var > active account > None."""
+    """Resolve base URL: active account > env var > None."""
+    acct = get_active_account()
+    if acct:
+        base_url = acct.get("baseUrl")
+        if base_url:
+            return base_url
     if url := os.environ.get("ANTHROPIC_BASE_URL"):
         return url
     if url := os.environ.get("OPENAI_BASE_URL"):
@@ -220,9 +221,6 @@ def get_base_url() -> str | None:
         return "https://api.mistral.ai/v1"
     if os.environ.get("GROQ_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
         return "https://api.groq.com/openai/v1"
-    acct = get_active_account()
-    if acct:
-        return acct.get("baseUrl")
     return None
 
 
