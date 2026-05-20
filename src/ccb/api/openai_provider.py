@@ -8,13 +8,17 @@ from typing import Any, AsyncIterator
 
 from openai import AsyncOpenAI, RateLimitError, APIStatusError, APIConnectionError
 
-from ccb.api.base import Message, Provider, StreamEvent, ToolCall
+from ccb.api.base import (
+    _MAX_RETRIES,
+    _RETRYABLE_STATUS,
+    Message,
+    Provider,
+    retry_delay,
+    StreamEvent,
+    ToolCall,
+)
 
 logger = logging.getLogger(__name__)
-
-_RETRYABLE_STATUS = {429, 500, 502, 503, 529}
-_MAX_RETRIES = 3
-_BASE_DELAY = 1.0
 
 
 def _is_reasoning_model(model: str) -> bool:
@@ -40,8 +44,9 @@ class OpenAIProvider(Provider):
             if not bu.endswith("/v1"):
                 bu += "/v1"
             kwargs["base_url"] = bu
-        # Set explicit timeouts: 30s connect, 120s read (image uploads need time)
-        kwargs["timeout"] = {"connect": 30, "read": 120, "write": 30, "pool": 5}
+        # Set explicit timeout (image uploads need extra time)
+        import httpx
+        kwargs["timeout"] = httpx.Timeout(180.0, connect=30.0)
         self._client = AsyncOpenAI(**kwargs)
 
     def name(self) -> str:
@@ -75,6 +80,7 @@ class OpenAIProvider(Provider):
         system: str = "",
         max_tokens: int = 16384,
         prefill: str = "",
+        temperature: float | None = None,
     ) -> AsyncIterator[StreamEvent]:
         api_messages = self._build_messages(messages, system)
         if prefill:
@@ -85,10 +91,11 @@ class OpenAIProvider(Provider):
             "model": self._model,
             "messages": api_messages,
             "stream": True,
-            "stream_options": {"include_usage": True},
         }
         if max_tokens:
             kwargs["max_tokens"] = max_tokens
+        if temperature is not None:
+            kwargs["temperature"] = temperature
         # Reasoning effort for o-series / gpt-5+ models
         if self._reasoning_effort and _is_reasoning_model(self._model):
             kwargs["reasoning_effort"] = self._reasoning_effort
@@ -126,35 +133,41 @@ class OpenAIProvider(Provider):
                 pass
 
         # Some OpenAI-compatible APIs don't support stream_options;
-        # fall back without it on error.  Also retry transient errors.
+        # try without it first, then add if supported.  Also retry transient errors.
         last_err: Exception | None = None
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                try:
-                    response = await self._client.chat.completions.create(**kwargs)
-                except Exception:
-                    kwargs.pop("stream_options", None)
-                    response = await self._client.chat.completions.create(**kwargs)
+                response = await self._client.chat.completions.create(**kwargs)
                 break  # success
             except RateLimitError as e:
                 last_err = e
-                delay = _BASE_DELAY * (2 ** attempt)
-                logger.warning("Rate limited (attempt %d/%d), retrying in %.1fs", attempt + 1, _MAX_RETRIES, delay)
+                delay = retry_delay(attempt)
+                logger.debug("Rate limited (attempt %d/%d), retrying in %.1fs", attempt + 1, _MAX_RETRIES, delay)
+                from ccb.display import print_info
+                print_info(f"Rate limited (attempt {attempt + 1}/{_MAX_RETRIES}), retrying in {delay:.1f}s")
                 await asyncio.sleep(delay)
             except APIStatusError as e:
                 if e.status_code in _RETRYABLE_STATUS:
                     last_err = e
-                    delay = _BASE_DELAY * (2 ** attempt)
-                    logger.warning("Transient API error %d (attempt %d/%d), retrying in %.1fs",
-                                   e.status_code, attempt + 1, _MAX_RETRIES, delay)
+                    delay = retry_delay(attempt)
+                    logger.debug("Transient API error %d (attempt %d/%d), retrying in %.1fs",
+                                 e.status_code, attempt + 1, _MAX_RETRIES, delay)
+                    from ccb.display import print_info
+                    print_info(f"Transient API error {e.status_code} (attempt {attempt + 1}/{_MAX_RETRIES}), retrying in {delay:.1f}s")
                     await asyncio.sleep(delay)
                     continue
+                # Fast-fail on auth errors (401) and payment errors (402)
+                if e.status_code in (401, 402):
+                    yield StreamEvent(type="error", error=f"API error {e.status_code}: {e.message}")
+                    return
                 yield StreamEvent(type="error", error=f"OpenAI API error {e.status_code}: {e.message}")
                 return
             except APIConnectionError as e:
                 last_err = e
-                delay = _BASE_DELAY * (2 ** attempt)
-                logger.warning("Connection error (attempt %d/%d), retrying in %.1fs", attempt + 1, _MAX_RETRIES, delay)
+                delay = retry_delay(attempt)
+                logger.debug("Connection error (attempt %d/%d), retrying in %.1fs", attempt + 1, _MAX_RETRIES, delay)
+                from ccb.display import print_info
+                print_info(f"Connection error (attempt {attempt + 1}/{_MAX_RETRIES}), retrying in {delay:.1f}s")
                 await asyncio.sleep(delay)
         else:
             yield StreamEvent(type="error", error=f"OpenAI API error after {_MAX_RETRIES} retries: {last_err}")
@@ -172,9 +185,11 @@ class OpenAIProvider(Provider):
 
             delta = choice.delta
 
-            # Text content
+            # Text content (some APIs like SenseNova put content in 'reasoning' field)
             if delta.content:
                 yield StreamEvent(type="text", text=delta.content)
+            elif hasattr(delta, "reasoning") and delta.reasoning:
+                yield StreamEvent(type="text", text=delta.reasoning)
 
             # Tool calls (streamed incrementally)
             if delta.tool_calls:

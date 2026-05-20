@@ -1,11 +1,11 @@
 """Notebook tool - edit Jupyter notebooks."""
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from typing import Any
 
+from ccb.json_store import read_json, write_json
 from ccb.tools.base import Tool, ToolResult
 from ccb.tools.tool_prompts import NOTEBOOK_EDIT_PROMPT
 
@@ -32,9 +32,9 @@ class NotebookEditTool(Tool):
         if not p.exists():
             return ToolResult(output=f"Notebook not found: {p}", is_error=True)
 
-        try:
-            nb = json.loads(p.read_text())
-        except Exception as e:
+        nb = read_json(p)
+        if not isinstance(nb, dict):
+            e = "invalid notebook JSON"
             return ToolResult(output=f"Error reading notebook: {e}", is_error=True)
 
         cells = nb.get("cells", [])
@@ -59,7 +59,7 @@ class NotebookEditTool(Tool):
 
         nb["cells"] = cells
         try:
-            p.write_text(json.dumps(nb, indent=1, ensure_ascii=False))
+            write_json(p, nb, indent=1, ensure_ascii=False)
             return ToolResult(output=f"{'Inserted' if mode == 'insert' else 'Replaced'} cell {cell_num}")
         except Exception as e:
             return ToolResult(output=f"Error writing notebook: {e}", is_error=True)

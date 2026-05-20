@@ -39,6 +39,32 @@ def _persist_session(session: Session, action: str, cwd: str) -> None:
         )
 
 
+async def _run_prompt_command(
+    *,
+    session: Session,
+    provider: Provider,
+    registry: ToolRegistry,
+    cwd: str,
+    prompt: str,
+    persist_action: str,
+    mcp_manager: MCPManager | None = None,
+    state: dict[str, Any] | None = None,
+) -> None:
+    from ccb.loop import run_turn
+    from ccb.prompts import get_system_prompt
+
+    session.add_user_message(prompt)
+    await run_turn(
+        provider,
+        session,
+        registry,
+        get_system_prompt(cwd),
+        mcp_manager=mcp_manager,
+        state=state,
+    )
+    _persist_session(session, persist_action, cwd)
+
+
 async def handle_command(
     cmd: str,
     session: Session,
@@ -349,7 +375,7 @@ async def handle_command(
 
     # ── Desktop / Mobile / Voice ──
     if command == "/desktop":
-        print_info("Continue in Claude Desktop: https://claude.ai/download")
+        print_info("Launch the local desktop app with: ccb-py desktop")
         return True
     if command == "/mobile":
         print_info("Download Claude mobile: https://claude.ai/mobile")
@@ -539,16 +565,16 @@ async def handle_command(
             prompt = prompt.replace(placeholder, args)
         if args and prompt == template:
             prompt = f"{template}\n\n{args}"
-        session.add_user_message(prompt)
-        from ccb.loop import run_turn
-        from ccb.prompts import get_system_prompt
-        await run_turn(
-            provider, session, registry,
-            get_system_prompt(cwd),
+        await _run_prompt_command(
+            session=session,
+            provider=provider,
+            registry=registry,
+            cwd=cwd,
+            prompt=prompt,
+            persist_action="command_plugin_prompt_persist_failed",
             mcp_manager=mcp_manager,
             state=state,
         )
-        _persist_session(session, "command_plugin_prompt_persist_failed", cwd)
         return True
 
     # ── Unknown → pass to model ──
@@ -848,26 +874,34 @@ async def _cmd_tasks(session: Session) -> bool:
 
 
 async def _cmd_advisor(session: Session, provider: Provider, registry, cwd: str, mcp_manager) -> bool:
-    session.add_user_message(
-        "Please act as a senior code reviewer. Review the recent changes and provide "
-        "constructive feedback on code quality, potential bugs, and improvements."
+    await _run_prompt_command(
+        session=session,
+        provider=provider,
+        registry=registry,
+        cwd=cwd,
+        prompt=(
+            "Please act as a senior code reviewer. Review the recent changes and provide "
+            "constructive feedback on code quality, potential bugs, and improvements."
+        ),
+        persist_action="command_advisor_persist_failed",
+        mcp_manager=mcp_manager,
     )
-    from ccb.loop import run_turn
-    from ccb.prompts import get_system_prompt
-    await run_turn(provider, session, registry, get_system_prompt(cwd), mcp_manager=mcp_manager)
-    _persist_session(session, "command_advisor_persist_failed", cwd)
     return True
 
 
 async def _cmd_security_review(session: Session, provider: Provider, registry, cwd: str, mcp_manager) -> bool:
-    session.add_user_message(
-        "Perform a security review of the current codebase. Look for common vulnerabilities "
-        "like injection attacks, authentication issues, data exposure, and insecure configurations."
+    await _run_prompt_command(
+        session=session,
+        provider=provider,
+        registry=registry,
+        cwd=cwd,
+        prompt=(
+            "Perform a security review of the current codebase. Look for common vulnerabilities "
+            "like injection attacks, authentication issues, data exposure, and insecure configurations."
+        ),
+        persist_action="command_security_review_persist_failed",
+        mcp_manager=mcp_manager,
     )
-    from ccb.loop import run_turn
-    from ccb.prompts import get_system_prompt
-    await run_turn(provider, session, registry, get_system_prompt(cwd), mcp_manager=mcp_manager)
-    _persist_session(session, "command_security_review_persist_failed", cwd)
     return True
 
 
@@ -895,11 +929,15 @@ async def _cmd_review(args: str, session: Session, provider: Provider, registry,
         return True
     number = int(args) if args.strip().isdigit() else None
     prompt = generate_review_prompt(number, cwd=cwd)
-    session.add_user_message(prompt)
-    from ccb.loop import run_turn
-    from ccb.prompts import get_system_prompt
-    await run_turn(provider, session, registry, get_system_prompt(cwd), mcp_manager=mcp_manager)
-    _persist_session(session, "command_review_persist_failed", cwd)
+    await _run_prompt_command(
+        session=session,
+        provider=provider,
+        registry=registry,
+        cwd=cwd,
+        prompt=prompt,
+        persist_action="command_review_persist_failed",
+        mcp_manager=mcp_manager,
+    )
     return True
 
 
@@ -1006,11 +1044,15 @@ async def _cmd_autofix_pr(args: str, session: Session, provider: Provider, regis
         return True
     number = int(args) if args.strip().isdigit() else None
     prompt = generate_autofix_prompt(number, cwd=cwd)
-    session.add_user_message(prompt)
-    from ccb.loop import run_turn
-    from ccb.prompts import get_system_prompt
-    await run_turn(provider, session, registry, get_system_prompt(cwd), mcp_manager=mcp_manager)
-    _persist_session(session, "command_autofix_pr_persist_failed", cwd)
+    await _run_prompt_command(
+        session=session,
+        provider=provider,
+        registry=registry,
+        cwd=cwd,
+        prompt=prompt,
+        persist_action="command_autofix_pr_persist_failed",
+        mcp_manager=mcp_manager,
+    )
     return True
 
 
@@ -1287,17 +1329,15 @@ async def _cmd_skill(
         return False
     _skill_item, prompt = resolved
 
-    session.add_user_message(prompt)
-    from ccb.loop import run_turn
-    from ccb.prompts import get_system_prompt
-    await run_turn(
-        provider,
-        session,
-        registry,
-        get_system_prompt(cwd),
+    await _run_prompt_command(
+        session=session,
+        provider=provider,
+        registry=registry,
+        cwd=cwd,
+        prompt=prompt,
+        persist_action="command_skill_persist_failed",
         mcp_manager=mcp_manager,
     )
-    _persist_session(session, "command_skill_persist_failed", cwd)
     return True
 
 
@@ -1471,11 +1511,15 @@ async def _cmd_voice(
             voice_listen_text = await voice.record_and_transcribe(duration=10)
             if voice_listen_text:
                 console.print(f"[bold]Transcribed:[/bold] {voice_listen_text}")
-                session.add_user_message(voice_listen_text)
-                from ccb.loop import run_turn
-                from ccb.prompts import get_system_prompt
-                await run_turn(provider, session, registry, get_system_prompt(cwd), mcp_manager=mcp_manager)
-                _persist_session(session, "command_voice_persist_failed", cwd)
+                await _run_prompt_command(
+                    session=session,
+                    provider=provider,
+                    registry=registry,
+                    cwd=cwd,
+                    prompt=voice_listen_text,
+                    persist_action="command_voice_persist_failed",
+                    mcp_manager=mcp_manager,
+                )
             else:
                 print_info("No speech detected.")
         elif args and args.startswith("model "):

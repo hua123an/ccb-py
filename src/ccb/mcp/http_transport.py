@@ -78,7 +78,7 @@ class MCPHttpTransport:
         if not self._session:
             raise RuntimeError("Not connected")
         req_id = str(uuid.uuid4())[:8]
-        payload = {
+        payload: dict[str, Any] = {
             "jsonrpc": "2.0",
             "id": req_id,
             "method": method,
@@ -101,7 +101,7 @@ class MCPHttpTransport:
         """Send a JSON-RPC notification (no response expected)."""
         if not self._session:
             raise RuntimeError("Not connected")
-        payload = {"jsonrpc": "2.0", "method": method}
+        payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
         if params:
             payload["params"] = params
         await self._session.post(self._message_endpoint, json=payload)

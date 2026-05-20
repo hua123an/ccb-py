@@ -30,7 +30,7 @@ class DecoratedTool(Tool):
         name: str,
         description: str,
         input_schema: dict[str, Any],
-        handler: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | str]],
+        handler: Callable[..., Awaitable[dict[str, Any] | str]],
         needs_perm: bool = True,
     ):
         self._name = name
@@ -117,12 +117,12 @@ def tool(
         t = DecoratedTool(
             name=name,
             description=description,
-            input_schema=schema,
+            input_schema=schema,  # type: ignore
             handler=func,
             needs_perm=needs_permission,
         )
         # Attach the Tool object to the function for easy retrieval
-        func._ccb_tool = t
+        setattr(func, "_ccb_tool", t)
         return func
 
     return decorator

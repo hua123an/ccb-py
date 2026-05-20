@@ -1,10 +1,21 @@
 """Google Cloud Vertex AI provider for Claude models."""
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from typing import Any, AsyncIterator
 
-from ccb.api.base import Message, Provider, StreamEvent, ToolCall
+from ccb.api.base import (
+    _MAX_RETRIES,
+    Message,
+    Provider,
+    retry_delay,
+    StreamEvent,
+    ToolCall,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class VertexProvider(Provider):
@@ -58,6 +69,7 @@ class VertexProvider(Provider):
         system: str = "",
         max_tokens: int = 16384,
         prefill: str = "",
+        temperature: float | None = None,
     ) -> AsyncIterator[StreamEvent]:
         if not self._has_vertex:
             yield StreamEvent(
@@ -90,87 +102,93 @@ class VertexProvider(Provider):
                 thinking_budget=self._thinking_budget if self._thinking_enabled else 0,
             ) if self._thinking_enabled or self._thinking_mode == "adaptive" else None,
             max_output_tokens=max_tokens,
-            temperature=1.0,
+            temperature=1.0 if temperature is None else temperature,
         )
 
         # Echo prefill
         if prefill:
             yield StreamEvent(type="text", text=prefill)
 
-        try:
-            # Use Vertex AI client
-            model_name = f"projects/{self._project_id}/locations/{self._region}/publishers/anthropic/models/{self._model}"
+        # Retry loop for transient errors
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                model_name = f"projects/{self._project_id}/locations/{self._region}/publishers/anthropic/models/{self._model}"
 
-            # For streaming, we need to use the async client
-            import asyncio
-
-            async def generate():
-                client = self._genai.Client(
-                    vertexai=True,
-                    project=self._project_id,
-                    location=self._region,
-                )
-                return await client.aio.models.generate_content_stream(
-                    model=model_name,
-                    contents=api_messages,
-                    config=config,
-                )
-
-            response = await asyncio.wait_for(generate(), timeout=180)
-
-            current_tool: dict[str, Any] | None = None
-
-            async for chunk in response:
-                # Handle text
-                for part in chunk.candidates[0].content.parts:
-                    if part.text:
-                        yield StreamEvent(type="text", text=part.text)
-
-                    # Handle tool use
-                    if hasattr(part, "function_call") and part.function_call:
-                        fc = part.function_call
-                        if not current_tool:
-                            current_tool = {"id": fc.id or "", "name": fc.name, "args": ""}
-                            yield StreamEvent(
-                                type="tool_use_start",
-                                tool_call=ToolCall(id=fc.id or "", name=fc.name, input={}),
-                            )
-                        if fc.args:
-                            current_tool["args"] += fc.args
-                            yield StreamEvent(type="tool_use_input", text=fc.args)
-
-                # Handle tool result
-                if current_tool and chunk.candidates[0].content.parts:
-                    for part in chunk.candidates[0].content.parts:
-                        if hasattr(part, "function_response"):
-                            import json
-                            try:
-                                parsed_input = json.loads(current_tool["args"]) if current_tool["args"] else {}
-                            except json.JSONDecodeError:
-                                parsed_input = {}
-                            tc = ToolCall(
-                                id=current_tool["id"],
-                                name=current_tool["name"],
-                                input=parsed_input,
-                            )
-                            yield StreamEvent(type="tool_use_end", tool_call=tc)
-                            current_tool = None
-
-                # Check for usage
-                if hasattr(chunk, "usage_metadata"):
-                    yield StreamEvent(
-                        type="done",
-                        usage={
-                            "input_tokens": getattr(chunk.usage_metadata, "prompt_token_count", 0),
-                            "output_tokens": getattr(chunk.usage_metadata, "candidates_token_count", 0),
-                        },
+                async def generate():
+                    client = self._genai.Client(
+                        vertexai=True,
+                        project=self._project_id,
+                        location=self._region,
+                    )
+                    return await client.aio.models.generate_content_stream(
+                        model=model_name,
+                        contents=api_messages,
+                        config=config,
                     )
 
-            # If no usage metadata, emit done at end
-            yield StreamEvent(type="done", usage={"input_tokens": 0, "output_tokens": 0})
+                response = await asyncio.wait_for(generate(), timeout=180)
+                break  # success
+            except Exception as e:
+                if attempt < _MAX_RETRIES:
+                    delay = retry_delay(attempt)
+                    logger.debug("Vertex AI error (attempt %d/%d), retrying in %.1fs", attempt + 1, _MAX_RETRIES, delay)
+                    await asyncio.sleep(delay)
+                    continue
+                yield StreamEvent(type="error", error=f"Vertex AI error after {_MAX_RETRIES} retries: {e}")
+                return
 
-        except Exception as e:
-            yield StreamEvent(type="error", error=f"Vertex AI error: {e}")
+        # Stream response (no retry needed for streaming itself)
+        current_tool: dict[str, Any] | None = None
+
+        async for chunk in response:
+            # Handle text
+            for part in chunk.candidates[0].content.parts:
+                if part.text:
+                    yield StreamEvent(type="text", text=part.text)
+
+                # Handle tool use
+                if hasattr(part, "function_call") and part.function_call:
+                    fc = part.function_call
+                    if not current_tool:
+                        current_tool = {"id": fc.id or "", "name": fc.name, "args": ""}
+                        yield StreamEvent(
+                            type="tool_use_start",
+                            tool_call=ToolCall(id=fc.id or "", name=fc.name, input={}),
+                        )
+                    if fc.args:
+                        current_tool["args"] += fc.args
+                        yield StreamEvent(type="tool_use_input", text=fc.args)
+
+            # Handle tool result
+            if current_tool and chunk.candidates[0].content.parts:
+                for part in chunk.candidates[0].content.parts:
+                    if hasattr(part, "function_response"):
+                        assert current_tool is not None
+                        import json
+                        try:
+                            parsed_input = json.loads(current_tool["args"]) if current_tool["args"] else {}
+                        except json.JSONDecodeError:
+                            parsed_input = {}
+                        tc = ToolCall(
+                            id=current_tool["id"],
+                            name=current_tool["name"],
+                            input=parsed_input,
+                        )
+                        yield StreamEvent(type="tool_use_end", tool_call=tc)
+                        current_tool = None
+
+            # Check for usage
+            if hasattr(chunk, "usage_metadata"):
+                yield StreamEvent(
+                    type="done",
+                    usage={
+                        "input_tokens": getattr(chunk.usage_metadata, "prompt_token_count", 0),
+                        "output_tokens": getattr(chunk.usage_metadata, "candidates_token_count", 0),
+                    },
+                )
+
+        # If no usage metadata, emit done at end
+        yield StreamEvent(type="done", usage={"input_tokens": 0, "output_tokens": 0})
 
     @staticmethod
     def _msg_to_vertex(msg: Message) -> Any:

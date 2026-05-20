@@ -1,10 +1,18 @@
 """Provider interface and shared types."""
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, AsyncIterator
+
+logger = logging.getLogger(__name__)
+
+# Shared retry constants — used by all providers
+_RETRYABLE_STATUS = {429, 500, 502, 503, 529}
+_MAX_RETRIES = 3
+_BASE_DELAY = 1.0  # seconds
 
 
 class Role(str, Enum):
@@ -39,6 +47,8 @@ class Message:
     files: list[dict[str, Any]] = field(default_factory=list)
     # Video/audio attachments (metadata + optional base64 for small files)
     media: list[dict[str, Any]] = field(default_factory=list)
+    # Optional message ID used for context collapse and tracing
+    id: str | None = None
 
     def to_anthropic(self) -> dict[str, Any]:
         if self.tool_results:
@@ -68,9 +78,9 @@ class Message:
             return {"role": "assistant", "content": blocks}
         # Multimodal: images + optional file content + video/audio + text
         if self.images or self.files or self.media:
-            blocks: list[dict] = []
+            media_blocks: list[dict] = []
             for img in self.images:
-                blocks.append({
+                media_blocks.append({
                     "type": "image",
                     "source": {
                         "type": "base64",
@@ -81,7 +91,7 @@ class Message:
             for fc in self.files:
                 fname = fc.get("filename", "file")
                 fcontent = fc.get("content", "")
-                blocks.append({
+                media_blocks.append({
                     "type": "text",
                     "text": f"<file name=\"{fname}\">\n{fcontent}\n</file>",
                 })
@@ -97,13 +107,13 @@ class Message:
                     desc += f" [{size // 1024}KB]"
                 if md.get("base64_data"):
                     desc += f"\n(base64 data available, {len(md['base64_data'])} chars)"
-                blocks.append({"type": "text", "text": f"<media>\n{desc}\n</media>"})
+                media_blocks.append({"type": "text", "text": f"<media>\n{desc}\n</media>"})
             if self.content:
-                blocks.append({"type": "text", "text": self.content})
-            return {"role": self.role.value, "content": blocks}
+                media_blocks.append({"type": "text", "text": self.content})
+            return {"role": self.role.value, "content": media_blocks}
         return {"role": self.role.value, "content": self.content}
 
-    def to_openai(self, use_anthropic_images: bool = False) -> dict[str, Any]:
+    def to_openai(self, use_anthropic_images: bool = False) -> dict[str, Any] | list[dict[str, Any]]:
         """Convert to OpenAI chat format.
 
         Args:
@@ -198,14 +208,31 @@ class StreamEvent:
 class Provider(ABC):
     """Abstract API provider."""
 
+    _caps: Any = None  # ModelCapabilities set by router
+
+    @property
+    def capabilities(self) -> Any:
+        """Return capabilities for this provider + model combo.
+
+        Set automatically by :func:`ccb.api.router.create_provider`.
+        """
+        if self._caps is not None:
+            return self._caps
+        # Lazy fallback if someone constructs provider directly
+        from ccb.capabilities import get_capabilities, infer_provider_from_model
+        provider_name = infer_provider_from_model(getattr(self, "_model", ""))
+        self._caps = get_capabilities(provider_name, getattr(self, "_model", ""))
+        return self._caps
+
     @abstractmethod
-    async def stream(
+    def stream(
         self,
         messages: list[Message],
         tools: list[dict[str, Any]],
         system: str = "",
         max_tokens: int = 16384,
         prefill: str = "",
+        temperature: float | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream a response, yielding StreamEvents.
 
@@ -215,6 +242,7 @@ class Provider(ABC):
                      Only natively supported by Anthropic; for OpenAI-compatible
                      relays running Claude it is injected as a trailing assistant
                      message and the prefix is echoed back as the first text event.
+            temperature: Optional sampling temperature for providers that support it.
         """
         ...
 
@@ -234,3 +262,8 @@ class Provider(ABC):
     def supports_thinking(self) -> bool:
         """Whether this provider supports extended thinking."""
         return False
+
+
+def retry_delay(attempt: int) -> float:
+    """Exponential backoff delay: _BASE_DELAY * 2 ** attempt."""
+    return _BASE_DELAY * (2 ** attempt)

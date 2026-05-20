@@ -4,9 +4,22 @@ Uses google-genai SDK when available, falls back to OpenAI-compatible endpoint.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any, AsyncIterator
 
-from ccb.api.base import Message, Provider, Role, StreamEvent, ToolCall
+from ccb.api.base import (
+    _MAX_RETRIES,
+    _RETRYABLE_STATUS,
+    Message,
+    Provider,
+    retry_delay,
+    Role,
+    StreamEvent,
+    ToolCall,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class GeminiProvider(Provider):
@@ -55,12 +68,13 @@ class GeminiProvider(Provider):
         system: str = "",
         max_tokens: int = 16384,
         prefill: str = "",
+        temperature: float | None = None,
     ) -> AsyncIterator[StreamEvent]:
         if self._has_native:
-            async for event in self._stream_native(messages, tools, system, max_tokens, prefill):
+            async for event in self._stream_native(messages, tools, system, max_tokens, prefill, temperature):
                 yield event
         else:
-            async for event in self._stream_openai_compat(messages, tools, system, max_tokens, prefill):
+            async for event in self._stream_openai_compat(messages, tools, system, max_tokens, prefill, temperature):
                 yield event
 
     async def _stream_native(
@@ -70,6 +84,7 @@ class GeminiProvider(Provider):
         system: str,
         max_tokens: int,
         prefill: str,
+        temperature: float | None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream using native google-genai SDK."""
         from google.genai import types
@@ -91,58 +106,69 @@ class GeminiProvider(Provider):
                 thinking_budget=self._thinking_budget if self._thinking_enabled else 0,
             ) if self._thinking_enabled or self._thinking_mode == "adaptive" else None,
             max_output_tokens=max_tokens,
-            temperature=1.0,
+            temperature=1.0 if temperature is None else temperature,
         )
 
         # Echo prefill
         if prefill:
             yield StreamEvent(type="text", text=prefill)
 
-        try:
-            import asyncio
+        # Retry loop for transient errors
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                async def generate():
+                    return await self._client.aio.models.generate_content_stream(
+                        model=self._model,
+                        contents=contents,
+                        config=config,
+                    )
 
-            async def generate():
-                return await self._client.aio.models.generate_content_stream(
-                    model=self._model,
-                    contents=contents,
-                    config=config,
-                )
+                response = await asyncio.wait_for(generate(), timeout=180)
+                break  # success
+            except Exception as e:
+                if attempt < _MAX_RETRIES:
+                    delay = retry_delay(attempt)
+                    logger.debug("Gemini error (attempt %d/%d), retrying in %.1fs", attempt + 1, _MAX_RETRIES, delay)
+                    await asyncio.sleep(delay)
+                    continue
+                yield StreamEvent(type="error", error=f"Gemini error after {_MAX_RETRIES} retries: {e}")
+                return
 
-            response = await asyncio.wait_for(generate(), timeout=180)
+        # Stream response (no retry needed for streaming itself)
+        current_tool: dict[str, Any] | None = None
 
-            current_tool: dict[str, Any] | None = None
+        async for chunk in response:
+            if not chunk.candidates:
+                continue
 
-            async for chunk in response:
-                if not chunk.candidates:
+            for part in chunk.candidates[0].content.parts:
+                # Handle thinking
+                if hasattr(part, "thought") and part.thought and part.text:
+                    yield StreamEvent(type="thinking", text=part.text)
                     continue
 
-                for part in chunk.candidates[0].content.parts:
-                    # Handle thinking
-                    if hasattr(part, "thought") and part.thought and part.text:
-                        yield StreamEvent(type="thinking", text=part.text)
-                        continue
+                # Handle text
+                if part.text:
+                    yield StreamEvent(type="text", text=part.text)
 
-                    # Handle text
-                    if part.text:
-                        yield StreamEvent(type="text", text=part.text)
-
-                    # Handle tool calls
-                    if hasattr(part, "function_call") and part.function_call:
-                        fc = part.function_call
-                        if not current_tool:
-                            current_tool = {"id": fc.id or "", "name": fc.name, "args": ""}
-                            yield StreamEvent(
-                                type="tool_use_start",
-                                tool_call=ToolCall(id=fc.id or "", name=fc.name, input={}),
-                            )
-                        if fc.args:
-                            current_tool["args"] += fc.args
-                            yield StreamEvent(type="tool_use_input", text=fc.args)
+                # Handle tool calls
+                if hasattr(part, "function_call") and part.function_call:
+                    fc = part.function_call
+                    if not current_tool:
+                        current_tool = {"id": fc.id or "", "name": fc.name, "args": ""}
+                        yield StreamEvent(
+                            type="tool_use_start",
+                            tool_call=ToolCall(id=fc.id or "", name=fc.name, input={}),
+                        )
+                    if fc.args:
+                        current_tool["args"] += fc.args
+                        yield StreamEvent(type="tool_use_input", text=fc.args)
 
                 # Check if tool call is complete
                 if current_tool and chunk.candidates[0].content.parts:
                     for part in chunk.candidates[0].content.parts:
                         if hasattr(part, "function_call") and part.function_call:
+                            assert current_tool is not None
                             import json
                             try:
                                 parsed = json.loads(current_tool["args"]) if current_tool["args"] else {}
@@ -168,9 +194,6 @@ class GeminiProvider(Provider):
 
             yield StreamEvent(type="done", usage={"input_tokens": 0, "output_tokens": 0})
 
-        except Exception as e:
-            yield StreamEvent(type="error", error=f"Gemini error: {e}")
-
     async def _stream_openai_compat(
         self,
         messages: list[Message],
@@ -178,6 +201,7 @@ class GeminiProvider(Provider):
         system: str,
         max_tokens: int,
         prefill: str,
+        temperature: float | None,
     ) -> AsyncIterator[StreamEvent]:
         """Fallback: stream via OpenAI-compatible endpoint."""
         import httpx
@@ -220,80 +244,100 @@ class GeminiProvider(Provider):
             "max_tokens": max_tokens,
             "stream": True,
         }
+        if temperature is not None:
+            payload["temperature"] = temperature
         if api_tools:
             payload["tools"] = api_tools
 
         if prefill:
             yield StreamEvent(type="text", text=prefill)
 
-        try:
-            async with httpx.AsyncClient(timeout=180) as client:
-                async with client.stream(
-                    "POST",
-                    f"{self._base_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self._api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                ) as resp:
-                    if resp.status_code != 200:
-                        body = await resp.aread()
-                        yield StreamEvent(type="error", error=f"Gemini API error {resp.status_code}: {body.decode()[:500]}")
-                        return
+        # Retry loop for transient HTTP errors
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=180) as client:
+                    async with client.stream(
+                        "POST",
+                        f"{self._base_url}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {self._api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    ) as resp:
+                        if resp.status_code != 200:
+                            body = await resp.aread()
+                            # Check if retryable
+                            if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
+                                import asyncio
+                                delay = retry_delay(attempt)
+                                logger.debug("Gemini API error %d (attempt %d/%d), retrying in %.1fs", resp.status_code, attempt + 1, _MAX_RETRIES, delay)
+                                await asyncio.sleep(delay)
+                                continue
+                            yield StreamEvent(type="error", error=f"Gemini API error {resp.status_code}: {body.decode()[:500]}")
+                            return
 
-                    current_tool: dict[str, Any] | None = None
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data: "):
-                            continue
-                        data = line[6:]
-                        if data.strip() == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data)
-                        except json.JSONDecodeError:
-                            continue
-
-                        delta = chunk.get("choices", [{}])[0].get("delta", "")
-
-                        if isinstance(delta, dict):
-                            if delta.get("content"):
-                                yield StreamEvent(type="text", text=delta["content"])
-
-                            if delta.get("tool_calls"):
-                                for tc_delta in delta["tool_calls"]:
-                                    fn = tc_delta.get("function", {})
-                                    if tc_delta.get("id"):
-                                        current_tool = {"id": tc_delta["id"], "name": fn.get("name", ""), "args": ""}
-                                        yield StreamEvent(
-                                            type="tool_use_start",
-                                            tool_call=ToolCall(id=tc_delta["id"], name=fn.get("name", ""), input={}),
-                                        )
-                                    if fn.get("arguments") and current_tool:
-                                        current_tool["args"] += fn["arguments"]
-                                        yield StreamEvent(type="tool_use_input", text=fn["arguments"])
-
-                        finish = chunk.get("choices", [{}])[0].get("finish_reason")
-                        if finish == "tool_calls" and current_tool:
+                        # Stream response (no retry needed for streaming itself)
+                        current_tool: dict[str, Any] | None = None
+                        async for line in resp.aiter_lines():
+                            if not line.startswith("data: "):
+                                continue
+                            data = line[6:]
+                            if data.strip() == "[DONE]":
+                                break
                             try:
-                                parsed = json.loads(current_tool["args"])
+                                chunk = json.loads(data)
                             except json.JSONDecodeError:
-                                parsed = {}
-                            tc = ToolCall(id=current_tool["id"], name=current_tool["name"], input=parsed)
-                            yield StreamEvent(type="tool_use_end", tool_call=tc)
-                            current_tool = None
+                                continue
 
-                        usage = chunk.get("usage")
-                        if usage:
-                            yield StreamEvent(
-                                type="done",
-                                usage={"input_tokens": usage.get("prompt_tokens", 0), "output_tokens": usage.get("completion_tokens", 0)},
-                            )
+                            delta = chunk.get("choices", [{}])[0].get("delta", "")
 
-            yield StreamEvent(type="done", usage={"input_tokens": 0, "output_tokens": 0})
+                            if isinstance(delta, dict):
+                                if delta.get("content"):
+                                    yield StreamEvent(type="text", text=delta["content"])
 
-        except Exception as e:
-            yield StreamEvent(type="error", error=f"Gemini error: {e}")
+                                if delta.get("tool_calls"):
+                                    for tc_delta in delta["tool_calls"]:
+                                        fn = tc_delta.get("function", {})
+                                        if tc_delta.get("id"):
+                                            current_tool = {"id": tc_delta["id"], "name": fn.get("name", ""), "args": ""}
+                                            yield StreamEvent(
+                                                type="tool_use_start",
+                                                tool_call=ToolCall(id=tc_delta["id"], name=fn.get("name", ""), input={}),
+                                            )
+                                        if fn.get("arguments") and current_tool:
+                                            current_tool["args"] += fn["arguments"]
+                                            yield StreamEvent(type="tool_use_input", text=fn["arguments"])
+
+                            finish = chunk.get("choices", [{}])[0].get("finish_reason")
+                            if finish == "tool_calls" and current_tool:
+                                try:
+                                    parsed = json.loads(current_tool["args"])
+                                except json.JSONDecodeError:
+                                    parsed = {}
+                                tc = ToolCall(id=current_tool["id"], name=current_tool["name"], input=parsed)
+                                yield StreamEvent(type="tool_use_end", tool_call=tc)
+                                current_tool = None
+
+                            usage = chunk.get("usage")
+                            if usage:
+                                yield StreamEvent(
+                                    type="done",
+                                    usage={"input_tokens": usage.get("prompt_tokens", 0), "output_tokens": usage.get("completion_tokens", 0)},
+                                )
+
+                yield StreamEvent(type="done", usage={"input_tokens": 0, "output_tokens": 0})
+                return  # success
+
+            except Exception as e:
+                if attempt < _MAX_RETRIES:
+                    import asyncio
+                    delay = retry_delay(attempt)
+                    logger.debug("Gemini error (attempt %d/%d), retrying in %.1fs", attempt + 1, _MAX_RETRIES, delay)
+                    await asyncio.sleep(delay)
+                    continue
+                yield StreamEvent(type="error", error=f"Gemini error after {_MAX_RETRIES} retries: {e}")
+                return
 
     def _messages_to_gemini(self, messages: list[Message]) -> list[Any]:
         """Convert messages to Gemini native format."""
@@ -318,7 +362,7 @@ class GeminiProvider(Provider):
                         )
                     ))
 
-            role = "user" if msg.role in (Role.USER, Role.TOOL_RESULT) else "model"
+            role = "user" if msg.role == Role.USER else "model"
             contents.append(types.Content(role=role, parts=parts))
 
         return contents

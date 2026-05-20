@@ -414,7 +414,7 @@ class TestACPServerTools:
         server = initialized_server
         resp_json = await server._dispatch(json.dumps({
             "jsonrpc": "2.0", "id": 2, "method": "skill/invoke",
-            "params": {"name": "test", "args": {}},
+            "params": {"name": "missing-skill", "args": {}},
         }))
         resp = json.loads(resp_json)
         assert resp["error"]["code"] == ACPError.SKILL_NOT_FOUND

@@ -425,8 +425,14 @@ class ComputerUseTool(Tool):
         try:
             import pyautogui
             pyautogui.FAILSAFE = True
-            pyautogui.moveTo(int(x), int(y))
-            pyautogui.drag(int(end_x) - int(x), int(end_y) - int(y), duration=0.5)
+            
+            _x = int(float(str(x)))
+            _y = int(float(str(y)))
+            _ex = int(float(str(end_x)))
+            _ey = int(float(str(end_y)))
+            
+            pyautogui.moveTo(_x, _y)
+            pyautogui.drag(_ex - _x, _ey - _y, duration=0.5)
         except ImportError:
             return ToolResult(
                 output="pyautogui is required for drag. Install with: pip install pyautogui",

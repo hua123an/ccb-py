@@ -8,10 +8,10 @@ Usage:
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
+from ccb.json_store import read_json, write_json
 from ccb.oauth.flow import OAuthConfig, OAuthFlow, KNOWN_PROVIDERS
 from ccb.oauth.token_store import OAuthToken, TokenStore, get_token_store
 
@@ -28,23 +28,21 @@ class OAuthClient:
     def _load_configs(self) -> None:
         """Load OAuth client configs from ~/.ccb/oauth.json."""
         config_path = Path.home() / ".ccb" / "oauth.json"
-        if not config_path.exists():
+        data = read_json(config_path, default={})
+        if not isinstance(data, dict):
             return
-        try:
-            data = json.loads(config_path.read_text())
-            for provider, cfg in data.items():
-                known = KNOWN_PROVIDERS.get(provider, {})
-                merged = {**known, **cfg, "provider": provider}
-                self._configs[provider] = OAuthConfig(**{
-                    k: v for k, v in merged.items()
-                    if k in OAuthConfig.__dataclass_fields__
-                })
-        except (json.JSONDecodeError, OSError, TypeError):
-            pass
+        for provider, cfg in data.items():
+            if not isinstance(cfg, dict):
+                continue
+            known = KNOWN_PROVIDERS.get(provider, {})
+            merged = {**known, **cfg, "provider": provider}
+            self._configs[provider] = OAuthConfig(**{
+                k: v for k, v in merged.items()
+                if k in OAuthConfig.__dataclass_fields__
+            })
 
     def _save_configs(self) -> None:
         config_path = Path.home() / ".ccb" / "oauth.json"
-        config_path.parent.mkdir(parents=True, exist_ok=True)
         data = {}
         for provider, cfg in self._configs.items():
             data[provider] = {
@@ -54,7 +52,7 @@ class OAuthClient:
                 "token_url": cfg.token_url,
                 "scopes": cfg.scopes,
             }
-        config_path.write_text(json.dumps(data, indent=2))
+        write_json(config_path, data)
 
     def configure_provider(
         self,
@@ -99,6 +97,7 @@ class OAuthClient:
         method: "auto" (try browser, fallback device), "browser", "device", "client_credentials"
         """
         flow = self._get_flow(provider)
+        token: OAuthToken | None = None
 
         if method == "client_credentials":
             token = await flow.client_credentials_flow()

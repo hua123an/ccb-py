@@ -108,6 +108,18 @@ def set_bypass_all(bypass: bool) -> None:
     _bypass_all = bypass
 
 
+def get_permission_state(cwd: str = "") -> dict[str, Any]:
+    """Return the current permission posture for UI surfaces."""
+    default_mode = get_permission_mode()
+    effective_mode = "bypass" if (_bypass_all or default_mode == "bypassPermissions") else "default"
+    return {
+        "default_mode": default_mode,
+        "runtime_bypass": _bypass_all,
+        "effective_mode": effective_mode,
+        "workspace_rule_count": len(_load_workspace_rules(cwd)) if cwd else 0,
+    }
+
+
 def set_tool_filters(allowed: list[str] | None = None, denied: list[str] | None = None) -> None:
     """Set allowed/denied tool name filters (supports glob patterns)."""
     global _allowed_tools, _denied_tools

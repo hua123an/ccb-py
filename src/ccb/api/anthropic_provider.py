@@ -6,15 +6,19 @@ import logging
 from typing import Any, AsyncIterator
 
 import anthropic
+import httpx
 
-from ccb.api.base import Message, Provider, StreamEvent, ToolCall
+from ccb.api.base import (
+    _MAX_RETRIES,
+    _RETRYABLE_STATUS,
+    Message,
+    Provider,
+    retry_delay,
+    StreamEvent,
+    ToolCall,
+)
 
 logger = logging.getLogger(__name__)
-
-# Transient HTTP status codes worth retrying
-_RETRYABLE_STATUS = {429, 500, 502, 503, 529}
-_MAX_RETRIES = 3
-_BASE_DELAY = 1.0  # seconds
 
 
 class AnthropicProvider(Provider):
@@ -23,7 +27,10 @@ class AnthropicProvider(Provider):
         self._thinking_enabled = False
         self._thinking_budget = 10000
         self._thinking_mode = "off"  # "off", "on", "adaptive"
-        kwargs: dict[str, Any] = {"api_key": api_key}
+        kwargs: dict[str, Any] = {
+            "api_key": api_key,
+            "timeout": httpx.Timeout(300.0, connect=30.0),
+        }
         if base_url:
             kwargs["base_url"] = base_url
         self._client = anthropic.AsyncAnthropic(**kwargs)
@@ -57,6 +64,7 @@ class AnthropicProvider(Provider):
         system: str = "",
         max_tokens: int = 16384,
         prefill: str = "",
+        temperature: float | None = None,
     ) -> AsyncIterator[StreamEvent]:
         api_messages = [m.to_anthropic() for m in messages]
         if prefill:
@@ -149,29 +157,37 @@ class AnthropicProvider(Provider):
                             pass
 
                     # Final message for usage
-                    final = await stream.get_final_message()
-                    yield StreamEvent(
-                        type="done",
-                        stop_reason=final.stop_reason,
-                        usage={
-                            "input_tokens": final.usage.input_tokens,
-                            "output_tokens": final.usage.output_tokens,
-                        },
-                    )
+                    try:
+                        final = await stream.get_final_message()
+                        yield StreamEvent(
+                            type="done",
+                            stop_reason=final.stop_reason,
+                            usage={
+                                "input_tokens": final.usage.input_tokens,
+                                "output_tokens": final.usage.output_tokens,
+                            },
+                        )
+                    except (TypeError, AttributeError):
+                        # Some providers (MiniMax, Kimi) may return incomplete final message
+                        yield StreamEvent(type="done", usage={})
                 return  # success — exit retry loop
 
             except anthropic.RateLimitError as e:
                 last_err = e
-                delay = _BASE_DELAY * (2 ** attempt)
-                logger.warning("Rate limited (attempt %d/%d), retrying in %.1fs", attempt + 1, _MAX_RETRIES, delay)
+                delay = retry_delay(attempt)
+                logger.debug("Rate limited (attempt %d/%d), retrying in %.1fs", attempt + 1, _MAX_RETRIES, delay)
+                from ccb.display import print_info
+                print_info(f"Rate limited (attempt {attempt + 1}/{_MAX_RETRIES}), retrying in {delay:.1f}s")
                 await asyncio.sleep(delay)
                 continue
             except anthropic.APIStatusError as e:
                 if e.status_code in _RETRYABLE_STATUS:
                     last_err = e
-                    delay = _BASE_DELAY * (2 ** attempt)
-                    logger.warning("Transient API error %d (attempt %d/%d), retrying in %.1fs",
-                                   e.status_code, attempt + 1, _MAX_RETRIES, delay)
+                    delay = retry_delay(attempt)
+                    logger.debug("Transient API error %d (attempt %d/%d), retrying in %.1fs",
+                                 e.status_code, attempt + 1, _MAX_RETRIES, delay)
+                    from ccb.display import print_info
+                    print_info(f"Transient API error {e.status_code} (attempt {attempt + 1}/{_MAX_RETRIES}), retrying in {delay:.1f}s")
                     await asyncio.sleep(delay)
                     continue
                 # Non-retryable — yield error and return
@@ -179,10 +195,17 @@ class AnthropicProvider(Provider):
                 return
             except anthropic.APIConnectionError as e:
                 last_err = e
-                delay = _BASE_DELAY * (2 ** attempt)
-                logger.warning("Connection error (attempt %d/%d), retrying in %.1fs", attempt + 1, _MAX_RETRIES, delay)
+                delay = retry_delay(attempt)
+                logger.debug("Connection error (attempt %d/%d), retrying in %.1fs", attempt + 1, _MAX_RETRIES, delay)
+                from ccb.display import print_info
+                print_info(f"Connection error (attempt {attempt + 1}/{_MAX_RETRIES}), retrying in {delay:.1f}s")
                 await asyncio.sleep(delay)
                 continue
+            except (TypeError, AttributeError, KeyError) as e:
+                # Some Anthropic-compatible APIs (MiniMax, Kimi) return
+                # incomplete/unexpected response formats
+                yield StreamEvent(type="error", error=f"API response error (provider incompatibility): {e}")
+                return
 
         # All retries exhausted
         yield StreamEvent(type="error", error=f"Anthropic API error after {_MAX_RETRIES} retries: {last_err}")

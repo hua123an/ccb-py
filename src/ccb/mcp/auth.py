@@ -7,11 +7,12 @@ Implements the MCP auth spec:
 """
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from ccb.json_store import read_json, write_json
 
 
 @dataclass
@@ -52,17 +53,15 @@ class MCPAuthManager:
         self._load()
 
     def _load(self) -> None:
-        if not self._config_path.exists():
+        data = read_json(self._config_path, default={})
+        if not isinstance(data, dict):
             return
-        try:
-            data = json.loads(self._config_path.read_text())
-            for name, cfg in data.items():
+        for name, cfg in data.items():
+            if isinstance(cfg, dict):
                 self._auths[name] = MCPAuthInfo(server_name=name, **{
                     k: v for k, v in cfg.items()
                     if k in MCPAuthInfo.__dataclass_fields__ and k != "server_name"
                 })
-        except (json.JSONDecodeError, OSError, TypeError):
-            pass
 
     def _save(self) -> None:
         data = {}
@@ -77,8 +76,7 @@ class MCPAuthManager:
                 "oauth_provider": auth.oauth_provider,
                 "expires_at": auth.expires_at,
             }
-        self._config_path.parent.mkdir(parents=True, exist_ok=True)
-        self._config_path.write_text(json.dumps(data, indent=2))
+        write_json(self._config_path, data)
 
     def set_bearer_token(self, server_name: str, token: str, expires_at: float = 0) -> None:
         self._auths[server_name] = MCPAuthInfo(

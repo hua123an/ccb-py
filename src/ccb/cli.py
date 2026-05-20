@@ -508,5 +508,15 @@ def connect_command(socket_path):
     run_client(socket_path=socket_path)
 
 
+@main.command("desktop")
+@click.option("-m", "--model", default=None, help="Model to open the desktop app with.")
+@click.option("--cwd", default=None, help="Workspace directory for the desktop app.")
+def desktop_command(model, cwd):
+    """Launch the local desktop app."""
+    from ccb.desktop_app import launch_desktop_app
+
+    launch_desktop_app(model=model, cwd=cwd)
+
+
 if __name__ == "__main__":
     main()

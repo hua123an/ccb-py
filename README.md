@@ -27,7 +27,16 @@ pip install -e ".[agents]"
 
 # Run
 ccb-py
+
+# Launch desktop UI
+ccb-py desktop
 ```
+
+Desktop UI notes:
+- Uses Python's built-in `tkinter`, so it does not add a new runtime dependency.
+- Reuses your existing account/model config and persists chat sessions like the CLI.
+- Includes a session sidebar plus runtime status panels for context, token/cost, recent events, jobs, and permission posture.
+- Full REPL-only flows and interactive tool approvals still stay in the terminal UI for now.
 
 ## Configuration
 

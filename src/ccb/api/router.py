@@ -22,8 +22,21 @@ OPENAI_RELAYS = {
     "openai.com",
     "api.mistral.ai",
     "api.groq.com",
+    "api.minimaxi.com",
+    "api.freemodel.dev",
     # Add more as needed
 }
+
+# Known Anthropic-compatible relays (native Anthropic format, NOT OpenAI)
+ANTHROPIC_RELAYS = {
+    "api.kimi.com",
+    # Add more as needed
+}
+
+
+def _is_claude_model(model: str) -> bool:
+    """Check if model name is a Claude model (for Anthropic-native image relay)."""
+    return "claude" in model.lower()
 
 
 def _detect_provider_from_url(base_url: str | None, fallback: str) -> str:
@@ -32,6 +45,19 @@ def _detect_provider_from_url(base_url: str | None, fallback: str) -> str:
         return fallback
 
     url_lower = base_url.lower()
+
+    # Check URL path for /anthropic suffix — many relay services expose
+    # both OpenAI and Anthropic format endpoints on the same domain
+    # (e.g. api.minimaxi.com/anthropic).
+    # This MUST be checked before the domain-based relay lists.
+    from urllib.parse import urlparse
+    path = urlparse(url_lower).path.rstrip("/")
+    if path.endswith("/anthropic"):
+        return "anthropic"
+
+    # Check known Anthropic relays (always use Anthropic format)
+    if any(relay in url_lower for relay in ANTHROPIC_RELAYS):
+        return "anthropic"
 
     # Check known OpenAI relays
     if any(relay in url_lower for relay in OPENAI_RELAYS):
@@ -57,35 +83,41 @@ def create_provider(
     model: str | None = None,
     api_key: str | None = None,
     base_url: str | None = None,
+    provider_type: str | None = None,
 ) -> Provider:
     model = model or get_model()
     api_key = api_key or get_api_key()
     base_url = base_url or get_base_url()
-    account_provider = get_provider()
+    account_provider = provider_type or get_provider()
 
     # Detect provider from base_url if provided, otherwise use account config
-    provider_type = _detect_provider_from_url(base_url, account_provider)
+    resolved_provider_type = _detect_provider_from_url(base_url, account_provider)
 
     # Default: trust the detected provider type
-    if provider_type == "anthropic":
+    from ccb.capabilities import get_capabilities
+
+    if resolved_provider_type == "anthropic":
         from ccb.api.anthropic_provider import AnthropicProvider
-        return AnthropicProvider(api_key=api_key, model=model, base_url=base_url)
-    elif provider_type == "gemini":
+        p = AnthropicProvider(api_key=api_key, model=model, base_url=base_url)
+    elif resolved_provider_type == "gemini":
         from ccb.api.gemini_provider import GeminiProvider
-        return GeminiProvider(api_key=api_key, model=model, base_url=base_url)
-    elif provider_type == "bedrock":
+        p = GeminiProvider(api_key=api_key, model=model, base_url=base_url)
+    elif resolved_provider_type == "bedrock":
         from ccb.api.bedrock_provider import BedrockProvider
-        return BedrockProvider(model=model, base_url=base_url)
-    elif provider_type == "vertex":
+        p = BedrockProvider(model=model, base_url=base_url)
+    elif resolved_provider_type == "vertex":
         from ccb.api.vertex_provider import VertexProvider
-        return VertexProvider(model=model, base_url=base_url)
-    elif provider_type in ("openai", "grok"):
+        p = VertexProvider(model=model, base_url=base_url)
+    elif resolved_provider_type in ("openai", "grok"):
         from ccb.api.openai_provider import OpenAIProvider
-        return OpenAIProvider(api_key=api_key, model=model, base_url=base_url)
+        p = OpenAIProvider(api_key=api_key, model=model, base_url=base_url)
     else:
         # Unknown provider type, default to Anthropic
         from ccb.api.anthropic_provider import AnthropicProvider
-        return AnthropicProvider(api_key=api_key, model=model, base_url=base_url)
+        p = AnthropicProvider(api_key=api_key, model=model, base_url=base_url)
+
+    p._caps = get_capabilities(resolved_provider_type, model)
+    return p
 
 
 async def resolve_and_create_provider(
@@ -110,6 +142,7 @@ async def resolve_and_create_provider(
                 model=model,
                 api_key=acct.get("apiKey"),
                 base_url=acct.get("baseUrl"),
+                provider_type=acct.get("provider"),
             ), cached
 
     # Slow path: probe all accounts in parallel
@@ -127,6 +160,7 @@ async def resolve_and_create_provider(
             model=model,
             api_key=acct.get("apiKey"),
             base_url=acct.get("baseUrl"),
+            provider_type=acct.get("provider"),
         ), acct_name
 
     # Fallback: use current active account

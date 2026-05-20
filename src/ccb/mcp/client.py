@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ccb.config import claude_json_path
+from ccb.json_store import read_json
 
 
 @dataclass
@@ -50,20 +51,24 @@ class MCPManager:
         gcfg_path = claude_json_path()
         if gcfg_path.exists():
             try:
-                gcfg = json.loads(gcfg_path.read_text())
+                gcfg = read_json(gcfg_path, default={})
+                if not isinstance(gcfg, dict):
+                    gcfg = {}
                 for name, cfg in gcfg.get("mcpServers", {}).items():
                     configs[name] = cfg
-            except (json.JSONDecodeError, OSError):
+            except (OSError, TypeError, ValueError):
                 pass
 
         # From project-level .mcp.json
         cwd_mcp = Path.cwd() / ".mcp.json"
         if cwd_mcp.exists():
             try:
-                pcfg = json.loads(cwd_mcp.read_text())
+                pcfg = read_json(cwd_mcp, default={})
+                if not isinstance(pcfg, dict):
+                    pcfg = {}
                 for name, cfg in pcfg.get("mcpServers", {}).items():
                     configs[name] = cfg
-            except (json.JSONDecodeError, OSError):
+            except (OSError, TypeError, ValueError):
                 pass
 
         return configs
@@ -107,6 +112,8 @@ class MCPManager:
         """Connect to stdio MCP server."""
         env = {**os.environ, **server.env}
         cmd = server.command
+        if not cmd:
+            raise ValueError("Server command cannot be empty")
         args = server.args
 
         server._proc = await asyncio.create_subprocess_exec(
@@ -117,7 +124,7 @@ class MCPManager:
             env=env,
         )
         server._reader = server._proc.stdout
-        server._writer_raw = server._proc.stdin
+        server._writer = server._proc.stdin
 
         # Start reading responses
         server._read_task = asyncio.create_task(self._read_loop(server))
@@ -255,9 +262,9 @@ class MCPManager:
         fut: asyncio.Future = asyncio.get_event_loop().create_future()
         server._pending[req_id] = fut
 
-        if server._writer_raw:
-            server._writer_raw.write(self._frame_message(payload))
-            await server._writer_raw.drain()
+        if server._writer:
+            server._writer.write(self._frame_message(payload))
+            await server._writer.drain()
 
         try:
             return await asyncio.wait_for(fut, timeout=30)
@@ -272,9 +279,9 @@ class MCPManager:
             "method": method,
             "params": params,
         }
-        if server._writer_raw:
-            server._writer_raw.write(self._frame_message(payload))
-            await server._writer_raw.drain()
+        if server._writer:
+            server._writer.write(self._frame_message(payload))
+            await server._writer.drain()
 
     async def call_tool(self, server_name: str, tool_name: str, arguments: dict) -> str:
         """Call a tool on an MCP server."""

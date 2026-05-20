@@ -13,6 +13,111 @@ class ToolResult:
     metadata: dict[str, Any] | None = None
 
 
+def validate_input(input: Any, schema: dict[str, Any]) -> list[str]:
+    """Validate input against a JSON Schema-style schema.
+
+    Returns a list of error messages (empty if valid).
+    Handles: required fields, type checking, enum values, oneOf, arrays, objects.
+    """
+    if schema.get("type") != "object":
+        return []
+    if not isinstance(input, dict):
+        return [f"Input must be an object, got {type(input).__name__}"]
+
+    return _validate_object(input, schema)
+
+
+def _type_error(path: str, expected: str, value: Any) -> str:
+    actual = type(value).__name__
+    if expected == "integer" and isinstance(value, float):
+        actual = "float"
+    return f"Field '{path}' must be {('an' if expected[0] in 'aeiou' else 'a')} {expected}, got {actual}"
+
+
+def _validate_one_of(value: Any, schema: dict[str, Any], path: str) -> list[str]:
+    variants = schema.get("oneOf", [])
+    if not variants:
+        return []
+    variant_errors: list[str] = []
+    for variant in variants:
+        errors = _validate_value(value, variant, path)
+        if not errors:
+            return []
+        variant_errors.extend(errors)
+    deduped = list(dict.fromkeys(variant_errors))
+    if len(deduped) == 1:
+        return deduped
+    return [f"Field '{path}' does not match any allowed schema ({'; '.join(deduped[:2])})"]
+
+
+def _validate_object(value: dict[str, Any], schema: dict[str, Any], path: str = "") -> list[str]:
+    errors: list[str] = []
+    properties = schema.get("properties", {})
+    required = schema.get("required", [])
+
+    for field in required:
+        if field not in value:
+            errors.append(f"Missing required field: '{field if not path else f'{path}.{field}'}'")
+
+    for field, field_value in value.items():
+        if field not in properties:
+            continue
+        field_path = field if not path else f"{path}.{field}"
+        errors.extend(_validate_value(field_value, properties[field], field_path))
+    return errors
+
+
+def _validate_array(value: list[Any], schema: dict[str, Any], path: str) -> list[str]:
+    item_schema = schema.get("items")
+    if not item_schema:
+        return []
+    errors: list[str] = []
+    for i, item in enumerate(value):
+        errors.extend(_validate_value(item, item_schema, f"{path}[{i}]"))
+    return errors
+
+
+def _validate_value(value: Any, schema: dict[str, Any], path: str) -> list[str]:
+    if "oneOf" in schema:
+        return _validate_one_of(value, schema, path)
+
+    errors: list[str] = []
+    field_type = schema.get("type")
+
+    if field_type == "string":
+        if not isinstance(value, str):
+            errors.append(_type_error(path, "string", value))
+            return errors
+    elif field_type == "integer":
+        if not isinstance(value, int) or isinstance(value, bool):
+            errors.append(_type_error(path, "integer", value))
+            return errors
+    elif field_type == "number":
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            errors.append(_type_error(path, "number", value))
+            return errors
+    elif field_type == "boolean":
+        if not isinstance(value, bool):
+            errors.append(_type_error(path, "boolean", value))
+            return errors
+    elif field_type == "array":
+        if not isinstance(value, list):
+            errors.append(_type_error(path, "array", value))
+            return errors
+        errors.extend(_validate_array(value, schema, path))
+    elif field_type == "object":
+        if not isinstance(value, dict):
+            errors.append(_type_error(path, "object", value))
+            return errors
+        errors.extend(_validate_object(value, schema, path))
+
+    if "enum" in schema and value not in schema["enum"]:
+        allowed = ", ".join(repr(v) for v in schema["enum"])
+        errors.append(f"Field '{path}' must be one of: {allowed}")
+
+    return errors
+
+
 class Tool(ABC):
     """Base class for all tools."""
 
