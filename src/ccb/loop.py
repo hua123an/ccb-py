@@ -22,8 +22,19 @@ from ccb.display import (
 from ccb.hooks import load_hooks, run_hooks
 from ccb.mcp.client import MCPManager
 from ccb.permissions import is_auto_denied, needs_permission, record_approval
+from ccb.session_repository import save_session
 from ccb.session import Session
-from ccb.tools.base import ToolRegistry
+from ccb.tools.base import ToolRegistry, validate_input
+
+# ── Constants ────────────────────────────────────────────────────────────────
+MAX_RETRIES = 2
+STREAM_TIMEOUT_SECONDS = 180
+CONTEXT_LIMIT_THRESHOLD = 0.9
+AUTO_COMPACT_MIN_MESSAGES = 6
+FAST_MODE_MAX_TOKENS = 4096
+AUTO_PARALLELIZE_THRESHOLD = 4
+MAX_CONCURRENT_AGENTS = 4
+HTTP_RETRY_CODES = (500, 502, 503, 529)
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -45,6 +56,110 @@ def _is_retryable(exc: Exception) -> bool:
     return False
 
 
+def _persist_session_state(session: Session) -> None:
+    """Persist session state after durable conversation changes."""
+    try:
+        save_session(session)
+    except Exception:
+        pass
+
+
+async def _extract_memories_from_latest_user_message(
+    provider: Provider,
+    session: Session,
+) -> None:
+    """Extract memories from the latest natural-language user message."""
+    for message in reversed(session.messages):
+        if message.role != Role.USER:
+            continue
+        if message.tool_results or not message.content:
+            continue
+        try:
+            from ccb.memory import get_extractor
+
+            extractor = get_extractor()
+            extractor.set_provider(provider)
+            await extractor.extract_from_message(
+                message.content,
+                role="user",
+                metadata={"cwd": session.cwd, "session_id": session.id},
+            )
+        except Exception:
+            pass
+        return
+
+
+async def _apply_context_management(
+    provider: Provider,
+    session: Session,
+    *,
+    model_name: str,
+    ctx_limit: int,
+) -> None:
+    """Apply context-reduction policies in a single, ordered place."""
+    ctx_used = session.last_input_tokens
+    ctx_ratio = ctx_used / ctx_limit if ctx_limit else 0
+
+    try:
+        from ccb.feature_flags import is_feature_enabled
+        if is_feature_enabled("tengu_context_collapse_enabled"):
+            from ccb.context_collapse import apply_collapses_if_needed
+
+            collapsed_messages = apply_collapses_if_needed(
+                session.messages,
+                model=model_name,
+                context_limit=ctx_limit,
+            )
+            if collapsed_messages != session.messages:
+                session.messages = collapsed_messages
+                _persist_session_state(session)
+    except Exception:
+        try:
+            from ccb.events import emit_event
+
+            emit_event(
+                "runtime",
+                "loop",
+                action="context_management_error",
+                payload={"session_id": session.id, "phase": "collapse"},
+                level="warning",
+                cwd=session.cwd,
+            )
+        except Exception:
+            pass
+
+    from ccb.memory import get_store
+
+    mem_store = get_store()
+    should_offload, offload_reason = mem_store.check_offload_threshold(ctx_ratio)
+    if not should_offload:
+        return
+
+    print_info(f"  📦 {offload_reason} ({ctx_ratio*100:.0f}%) - triggering memory compression")
+    from ccb.compaction import compact_session
+
+    try:
+        removed = await compact_session(session, provider)
+        session.last_input_tokens = 0
+        if removed:
+            _persist_session_state(session)
+            print_info(f"  ✓ Memory compressed: removed {removed} messages")
+    except Exception:
+        try:
+            from ccb.events import emit_event
+
+            emit_event(
+                "runtime",
+                "loop",
+                action="context_management_error",
+                payload={"session_id": session.id, "phase": "compaction"},
+                level="warning",
+                cwd=session.cwd,
+            )
+        except Exception:
+            pass
+
+
 async def run_turn(
     provider: Provider,
     session: Session,
@@ -55,11 +170,20 @@ async def run_turn(
     hooks: dict | None = None,
     output_format: str = "rich",
     state: dict[str, Any] | None = None,
+    skip_planning: bool = False,
+    nest_level: int = 0,
 ) -> None:
     """Run one user turn: stream response, handle tool calls, loop until done."""
+    # Reset agent counter per user turn (outer-most only)
+    if nest_level == 0:
+        global _agent_counter
+        _agent_counter = 0
     if hooks is None:
         hooks = load_hooks(session.cwd)
     state = state or {}
+
+    from ccb.agent_context import set_current_session_id
+    set_current_session_id(session.id)
 
     # ── Langfuse: start trace for this turn ──
     from ccb.langfuse_monitor import get_monitor as _get_lf_monitor
@@ -100,16 +224,17 @@ async def run_turn(
     cost.set_model(getattr(provider, "_model", ""))
     cost.start_turn()
 
-    # ── Task Planning: auto-decompose on first round when new user message arrives ──
+    # ── Task Planning: skip for sub-agents ──
     plan_result: dict[str, Any] | None = None
-    last_msg = session.messages[-1] if session.messages else None
-    if (
-        last_msg
-        and last_msg.role == Role.USER
-        and not last_msg.tool_results
-        and (last_msg.content or "").strip()
-    ):
-        plan_result = await _run_task_planning(
+    if not skip_planning:
+        last_msg = session.messages[-1] if session.messages else None
+        if (
+            last_msg
+            and last_msg.role == Role.USER
+            and not last_msg.tool_results
+            and (last_msg.content or "").strip()
+        ):
+            plan_result = await _run_task_planning(
             session, provider, system_prompt, text_mode, stream_json
         )
         if plan_result:
@@ -142,139 +267,142 @@ async def run_turn(
     # One-shot prefill: consumed on round 0, then cleared
     _prefill = state.pop("prefill", "") or ""
 
-    for round_num in range(max_tool_rounds):
-        # Budget check
-        if token_budget:
-            used = session.total_input_tokens + session.total_output_tokens
-            if used >= token_budget:
-                print_info(f"Token budget reached ({used:,}/{token_budget:,}). Stopping.")
-                return
+    try:
+        for round_num in range(max_tool_rounds):
+            # Budget check
+            if token_budget:
+                used = session.total_input_tokens + session.total_output_tokens
+                if used >= token_budget:
+                    print_info(f"Token budget reached ({used:,}/{token_budget:,}). Stopping.")
+                    return
 
-        # TaskBudget check (richer budget object)
-        if task_budget_obj:
-            can_continue, reason = task_budget_obj.check()
-            if not can_continue:
-                print_info(f"Task budget exhausted: {reason}")
-                return
+            # TaskBudget check (richer budget object)
+            if task_budget_obj:
+                can_continue, reason = task_budget_obj.check()
+                if not can_continue:
+                    print_info(f"Task budget exhausted: {reason}")
+                    return
 
-        # Auto-compact: trigger when the CURRENT conversation size (the most
-        # recent request's input_tokens) exceeds 80% of the context window.
-        # We use last_input_tokens (snapshot of the most recent request), NOT
-        # total_input_tokens (cumulative across all tool-call rounds, which
-        # over-counts by ~Nx for multi-tool turns and fires prematurely).
-        ctx_used = session.last_input_tokens
-        if ctx_used > ctx_limit * 0.9 and len(session.messages) > 6:
-            print_info(f"Context usage high ({ctx_used:,}/{ctx_limit:,}). Auto-compacting...")
-            from ccb.compaction import compact_session
-            try:
-                removed = await compact_session(session, provider)
-                session.last_input_tokens = 0
-                if removed:
-                    print_info(f"Compacted: removed {removed} messages, {len(session.messages)} remaining.")
-                else:
-                    # Fallback to legacy compaction
-                    from ccb.commands import _compact
-                    await _compact(session, provider)
-                    session.last_input_tokens = 0
-                    print_info(f"Compacted to {len(session.messages)} messages.")
-            except Exception as e:
-                print_error(f"Auto-compact failed: {e}")
+            await _apply_context_management(
+                provider,
+                session,
+                model_name=model_name,
+                ctx_limit=ctx_limit,
+            )
 
-        text_buf = ""
-        tool_calls: list[ToolCall] = []
-        usage: dict[str, int] = {}
-        thinking_start: float = 0.0
-        thinking_duration_ms: float = 0.0
+            text_buf = ""
+            tool_calls: list[ToolCall] = []
+            usage: dict[str, int] = {}
+            thinking_start: float = 0.0
+            thinking_duration_ms: float = 0.0
 
-        printer: StreamPrinter | None = None
-        if not text_mode and not stream_json:
-            printer = StreamPrinter()
-            printer.start()
+            printer: StreamPrinter | None = None
+            if not text_mode and not stream_json:
+                printer = StreamPrinter()
+                printer.start()
 
-        thinking_buf = ""
+            thinking_buf = ""
 
-        # Debug logging (CCB_DEBUG=1)
-        import os as _os
-        if _os.environ.get("CCB_DEBUG"):
-            _model = getattr(provider, "_model", "?")
-            _n = len(session.messages)
-            _last_role = session.messages[-1].role.value if session.messages else "?"
-            _last_content = (session.messages[-1].content or "")[:80] if session.messages else ""
-            _has_tr = bool(session.messages[-1].tool_results) if session.messages else False
-            print_info(f"[debug] round={round_num} msgs={_n} model={_model} last={_last_role} tr={_has_tr} '{_last_content}'")
+            # Debug logging (CCB_DEBUG=1)
+            import os as _os
+            if _os.environ.get("CCB_DEBUG"):
+                _model = getattr(provider, "_model", "?")
+                _n = len(session.messages)
+                _last_role = session.messages[-1].role.value if session.messages else "?"
+                _last_content = (session.messages[-1].content or "")[:80] if session.messages else ""
+                _has_tr = bool(session.messages[-1].tool_results) if session.messages else False
+                print_info(f"[debug] round={round_num} msgs={_n} model={_model} last={_last_role} tr={_has_tr} '{_last_content}'")
 
-        max_retries = 2
-        for attempt in range(max_retries + 1):
-            try:
-                # Stream with overall timeout: 180s covers image upload + generation
-                stream_coro = provider.stream(
-                    messages=session.messages,
-                    tools=all_tool_schemas,
-                    system=system_prompt,
-                    max_tokens=max_tokens,
-                    prefill=_prefill if round_num == 0 else "",
+            # Check for soft interrupts (optimistic swarm conflicts)
+            from ccb.swarm_broker import SoftInterruptBroker
+            broker = SoftInterruptBroker.get_instance()
+            events = broker.get_pending_events(session.id)
+            if events:
+                warning_header = (
+                    "\n\n=== SYSTEM OPTIMISTIC CONFLICT WARNING ===\n"
+                    "While you were thinking/planning, other sub-agents modified the following files:\n"
                 )
-                async with asyncio.timeout(180):
-                    async for event in stream_coro:
-                        if event.type == "text":
-                            text_buf += event.text
-                            if text_mode:
-                                sys.stdout.write(event.text)
-                                sys.stdout.flush()
-                            elif stream_json:
-                                _sj_line = json_mod.dumps({'type': 'text_delta', 'delta': {'text': event.text}})
-                                sys.stdout.write(_sj_line + '\n')
-                                sys.stdout.flush()
-                            elif printer:
-                                printer.feed(event.text)
+                for ev in events:
+                    warning_header += f"- File: {ev['file']} (modified by agent {ev['actor']})\n"
+                    warning_header += f"  Change details: {ev['diff']}\n"
+                warning_header += (
+                    "Please verify these files if you need to read or edit them, and ensure your "
+                    "subsequent edits do not overwrite their changes.\n"
+                    "===========================================\n\n"
+                )
+                round_system_prompt = f"{warning_header}\n{system_prompt}" if system_prompt else warning_header
+            else:
+                round_system_prompt = system_prompt
 
-                        elif event.type == "thinking":
-                            if not thinking_buf and not thinking_start:
-                                thinking_start = time.time()
-                            thinking_buf += event.text
-                            if not text_mode and printer:
-                                printer.feed_thinking(event.text)
+            try:
+                    # Stream with overall timeout: 180s covers image upload + generation
+                    stream_coro = provider.stream(
+                        messages=session.messages,
+                        tools=all_tool_schemas,
+                        system=round_system_prompt,
+                        max_tokens=max_tokens,
+                        prefill=_prefill if round_num == 0 else "",
+                    )
+                    async with asyncio.timeout(STREAM_TIMEOUT_SECONDS):
+                        async for event in stream_coro:
+                            if event.type == "text":
+                                text_buf += event.text
+                                if text_mode:
+                                    sys.stdout.write(event.text)
+                                    sys.stdout.flush()
+                                elif stream_json:
+                                    _sj_line = json_mod.dumps({'type': 'text_delta', 'delta': {'text': event.text}})
+                                    sys.stdout.write(_sj_line + '\n')
+                                    sys.stdout.flush()
+                                elif printer:
+                                    printer.feed(event.text)
 
-                            if stream_json:
-                                _sj_line = json_mod.dumps({'type': 'thinking', 'text': event.text})
-                                sys.stdout.write(_sj_line + '\n')
-                                sys.stdout.flush()
+                            elif event.type == "thinking":
+                                if not thinking_buf and not thinking_start:
+                                    thinking_start = time.time()
+                                thinking_buf += event.text
+                                if not text_mode and printer:
+                                    printer.feed_thinking(event.text)
 
-                        elif event.type == "tool_use_start":
-                            if stream_json and event.tool_call:
-                                tc = event.tool_call
-                                _sj_line = json_mod.dumps({'type': 'tool_use_start', 'id': tc.id, 'name': tc.name})
-                                sys.stdout.write(_sj_line + '\n')
-                                sys.stdout.flush()
+                                if stream_json:
+                                    _sj_line = json_mod.dumps({'type': 'thinking', 'text': event.text})
+                                    sys.stdout.write(_sj_line + '\n')
+                                    sys.stdout.flush()
 
-                        elif event.type == "tool_use_end":
-                            if event.tool_call:
-                                tool_calls.append(event.tool_call)
+                            elif event.type == "tool_use_start":
+                                if stream_json and event.tool_call:
+                                    tc = event.tool_call
+                                    _sj_line = json_mod.dumps({'type': 'tool_use_start', 'id': tc.id, 'name': tc.name})
+                                    sys.stdout.write(_sj_line + '\n')
+                                    sys.stdout.flush()
 
-                            if stream_json and event.tool_call:
-                                tc = event.tool_call
-                                _sj_line = json_mod.dumps({'type': 'tool_use_end', 'id': tc.id, 'name': tc.name, 'input': tc.input})
-                                sys.stdout.write(_sj_line + '\n')
-                                sys.stdout.flush()
+                            elif event.type == "tool_use_end":
+                                if event.tool_call:
+                                    tool_calls.append(event.tool_call)
 
-                        elif event.type == "done":
-                            usage = event.usage
-                            if thinking_start:
-                                thinking_duration_ms = (time.time() - thinking_start) * 1000
+                                if stream_json and event.tool_call:
+                                    tc = event.tool_call
+                                    _sj_line = json_mod.dumps({'type': 'tool_use_end', 'id': tc.id, 'name': tc.name, 'input': tc.input})
+                                    sys.stdout.write(_sj_line + '\n')
+                                    sys.stdout.flush()
 
-                            if stream_json:
-                                _sj_line = json_mod.dumps({'type': 'done', 'usage': event.usage})
-                                sys.stdout.write(_sj_line + '\n')
-                                sys.stdout.flush()
-                            break
+                            elif event.type == "done":
+                                usage = event.usage
+                                if thinking_start:
+                                    thinking_duration_ms = (time.time() - thinking_start) * 1000
 
-                        elif event.type == "error":
-                            if printer:
-                                printer.stop()
-                            print_error(event.error or "Unknown API error")
-                            return
+                                if stream_json:
+                                    _sj_line = json_mod.dumps({'type': 'done', 'usage': event.usage})
+                                    sys.stdout.write(_sj_line + '\n')
+                                    sys.stdout.flush()
+                                break
 
-                    break  # success — exit retry loop
+                            elif event.type == "error":
+                                if printer:
+                                    printer.stop()
+                                print_error(event.error or "Unknown API error")
+                                return
+
 
             except KeyboardInterrupt:
                 if printer:
@@ -282,102 +410,94 @@ async def run_turn(
                 print_info("Interrupted.")
                 return
             except Exception as e:
-                # ── Sentry: capture API errors ──
-                try:
-                    from ccb.sentry_integration import capture_exception as _sentry_capture
-                    _sentry_capture(e, context={"round": round_num, "attempt": attempt})
-                except Exception:
-                    pass
-
-                if attempt < max_retries and _is_retryable(e):
-                    wait = 2 ** attempt
-                    print_info(f"Retrying in {wait}s... ({e})")
-                    await asyncio.sleep(wait)
-                    # Reset buffers for retry
-                    text_buf = ""
-                    tool_calls = []
-                    thinking_buf = ""
+                    # ── Sentry: capture API errors ──
+                    try:
+                        from ccb.sentry_integration import capture_exception as _sentry_capture
+                        _sentry_capture(e, context={"round": round_num})
+                    except Exception:
+                        pass
                     if printer:
                         printer.stop()
-                        printer = StreamPrinter()
-                        printer.start()
-                    continue
-                if printer:
-                    printer.stop()
-                print_error(f"API error: {e}")
+                    print_error(f"API error: {e}")
+                    return
+
+            if printer:
+                printer.stop()
+            elif (text_mode or stream_json) and text_buf:
+                sys.stdout.write("\n")
+
+            # Guard: empty response (no text, no tools) — don't silently exit
+            if not text_buf.strip() and not tool_calls:
+                print_info("Model returned empty response (may be a context or API issue).")
+                cost.end_turn()
+                if not text_mode and not stream_json:
+                    print_usage(usage, thinking_duration_ms=thinking_duration_ms)
                 return
 
-        if printer:
-            printer.stop()
-        elif (text_mode or stream_json) and text_buf:
-            sys.stdout.write("\n")
+            # Record assistant message
+            session.add_assistant_message(text_buf, tool_calls if tool_calls else None)
+            session.add_usage(usage)
+            _persist_session_state(session)
+            cost.add_usage(usage)
+            if task_budget_obj:
+                task_budget_obj.add_usage(usage)
 
-        # Guard: empty response (no text, no tools) — don't silently exit
-        if not text_buf.strip() and not tool_calls:
-            print_info("Model returned empty response (may be a context or API issue).")
-            cost.end_turn()
+            # No tool calls → turn is done; end cost timer before printing
+            if not tool_calls:
+                cost.end_turn()
+                # ── Langfuse: log generation & end trace ──
+                _lf.generation_log(
+                    _trace_id,
+                    model=getattr(provider, "_model", ""),
+                    input_tokens=usage.get("input_tokens", 0),
+                    output_tokens=usage.get("output_tokens", 0),
+                    latency_ms=thinking_duration_ms,
+                )
+                _lf.trace_end(_trace_id)
+
             if not text_mode and not stream_json:
                 print_usage(usage, thinking_duration_ms=thinking_duration_ms)
-            return
 
-        # Record assistant message
-        session.add_assistant_message(text_buf, tool_calls if tool_calls else None)
-        session.add_usage(usage)
-        cost.add_usage(usage)
-        if task_budget_obj:
-            task_budget_obj.add_usage(usage)
+            if not tool_calls:
+                await _extract_memories_from_latest_user_message(provider, session)
+                return
 
-        # No tool calls → turn is done; end cost timer before printing
-        if not tool_calls:
-            cost.end_turn()
-            # ── Langfuse: log generation & end trace ──
-            _lf.generation_log(
-                _trace_id,
-                model=getattr(provider, "_model", ""),
-                input_tokens=usage.get("input_tokens", 0),
-                output_tokens=usage.get("output_tokens", 0),
-                latency_ms=thinking_duration_ms,
-            )
-            _lf.trace_end(_trace_id)
+            # Execute tool calls (with Ctrl-C protection)
+            try:
+                results = await execute_tool_calls(tool_calls, registry, session.cwd, mcp_manager, hooks, _trace_id)
+            except KeyboardInterrupt:
+                print_info("Interrupted during tool execution. Partial results saved.")
+                _persist_session_state(session)
+                return
+            session.add_tool_results(results)
+            _persist_session_state(session)
 
-        if not text_mode and not stream_json:
-            print_usage(usage, thinking_duration_ms=thinking_duration_ms)
+            # Auto-parallelize ONCE after 4 sequential tool rounds
+            # Use state flag to prevent re-triggering if run_turn is called again
+            if round_num == 4 and not state.get("_auto_parallelized"):
+                state["_auto_parallelized"] = True
+                success = await _try_auto_parallelize(
+                    session, provider, registry, system_prompt, max_tokens,
+                    text_mode, stream_json,
+                )
+                if success:
+                    pass  # auto-parallelize injected results; continue normally
 
-        if not tool_calls:
-            return
+            # Emit tool results for stream-json mode
+            if stream_json:
+                for _tc, _tr in zip(tool_calls, results):
+                    _sj_line = json_mod.dumps({'type': 'tool_result', 'tool_use_id': _tr.tool_use_id, 'content': _tr.content[:2000], 'is_error': _tr.is_error})
+                    sys.stdout.write(_sj_line + '\n')
+                    sys.stdout.flush()
 
-        # Execute tool calls (with Ctrl-C protection)
-        try:
-            results = await execute_tool_calls(tool_calls, registry, session.cwd, mcp_manager, hooks)
-        except KeyboardInterrupt:
-            print_info("Interrupted during tool execution. Partial results saved.")
-            session.save()
-            return
-        session.add_tool_results(results)
+            await _extract_memories_from_latest_user_message(provider, session)
 
-        # Auto-parallelize after 4 sequential tool rounds (original was 10 — too late)
-        if round_num >= 4:
-            success = await _try_auto_parallelize(
-                session, provider, registry, system_prompt, max_tokens,
-                text_mode, stream_json,
-            )
-            if success:
-                pass
-
-        # Emit tool results for stream-json mode
-        if stream_json:
-            for _tc, _tr in zip(tool_calls, results):
-                _sj_line = json_mod.dumps({'type': 'tool_result', 'tool_use_id': _tr.tool_use_id, 'content': _tr.content[:2000], 'is_error': _tr.is_error})
-                sys.stdout.write(_sj_line + '\n')
-                sys.stdout.flush()
-
-
-        # Save session after each tool round
-        session.save()
-
-    cost.end_turn()
-    _lf.trace_end(_trace_id)
-    print_info(f"Reached max tool rounds ({max_tool_rounds})")
+        cost.end_turn()
+        _lf.trace_end(_trace_id)
+        print_info(f"Reached max tool rounds ({max_tool_rounds})")
+    finally:
+        from ccb.swarm_broker import SoftInterruptBroker
+        SoftInterruptBroker.get_instance().unsubscribe_session(session.id)
 
 
 async def execute_tool_calls(
@@ -386,6 +506,7 @@ async def execute_tool_calls(
     cwd: str,
     mcp_manager: MCPManager | None = None,
     hooks: dict | None = None,
+    trace_id: str = "",
 ) -> list[APIToolResult]:
     """Execute a batch of tool calls, handling permissions.
 
@@ -411,7 +532,7 @@ async def execute_tool_calls(
             if tc.name == "agent":
                 # Each agent runs with its own provider + session (see run_agent)
                 agent_tasks[tc.id] = asyncio.create_task(
-                    run_agent(tc.input, registry, cwd)
+                    run_agent(tc.input, registry, cwd, max_tool_rounds=15)
                 )
 
     # Load MCP approval manager
@@ -483,6 +604,18 @@ async def execute_tool_calls(
             ))
             continue
 
+        # Validate input against the tool schema before permission or execution.
+        validation_errors = validate_input(tc.input, tool.input_schema)
+        if validation_errors:
+            error_msg = "Invalid tool input: " + "; ".join(validation_errors)
+            print_tool_result(tc.name, error_msg, is_error=True, input_data=tc.input)
+            results.append(APIToolResult(
+                tool_use_id=tc.id,
+                content=error_msg,
+                is_error=True,
+            ))
+            continue
+
         # Check permission
         if needs_permission(tc.name, tc.input, cwd=cwd):
             if is_auto_denied(tc.name, tc.input, cwd=cwd):
@@ -513,7 +646,7 @@ async def execute_tool_calls(
                     result = f"Agent failed: {e}"
             else:
                 # Single-agent path: run inline
-                result = await run_agent(tc.input, registry, cwd)
+                result = await run_agent(tc.input, registry, cwd, max_tool_rounds=15)
             results.append(APIToolResult(tool_use_id=tc.id, content=result))
             continue
 
@@ -535,7 +668,7 @@ async def execute_tool_calls(
             from ccb.sentry_integration import tool_span as _sentry_tool_span
             from ccb.langfuse_monitor import get_monitor as _get_lf_mon
             _lf_mon = _get_lf_mon()
-            _lf_sid = _lf_mon.span_start(f"tool:{tc.name}", input=tc.input)
+            _lf_sid = _lf_mon.span_start(parent_id=trace_id, name=f"tool:{tc.name}", input=tc.input)
             with _sentry_tool_span(tc.name, tc.input):
                 tool_result = await tool.execute(tc.input, cwd)
             _lf_mon.span_end(_lf_sid, output=tool_result.output[:500])
@@ -575,6 +708,8 @@ async def run_agent(
     registry: ToolRegistry,
     cwd: str,
     force_sandbox: bool = True,
+    max_tool_rounds: int = 15,
+    nest_level: int = 0,
 ) -> str:
     """Run a sub-agent with its own conversation context.
 
@@ -585,16 +720,16 @@ async def run_agent(
         which causes permission prompts and noisy tool output to route to
         the progress dashboard instead of the parent REPL.
       - Optional: Forced sandbox mode for secure execution (default on).
-
-    Budget: ``max_tool_rounds=80`` — deliberately generous. Per user's
-    preference, quality > token cost; cap only exists to prevent runaway
-    recursion, not to save tokens.
+      - max_tool_rounds=15 (not 25) to avoid runaway nested loops.
+      - nest_level caps nesting depth to prevent exponential agent explosion.
 
     Args:
         input_data: Agent task specification with "task" field
         registry: Tool registry for the agent
         cwd: Working directory
         force_sandbox: If True, enforce sandbox mode even if parent disabled it
+        max_tool_rounds: Cap on tool call rounds to prevent infinite recursion
+        nest_level: Current nesting depth (used to limit deeper nesting)
     """
     from ccb.api.router import create_provider
     from ccb.prompts import get_system_prompt
@@ -605,6 +740,12 @@ async def run_agent(
     global _agent_counter
     _agent_counter += 1
     label = f"a{_agent_counter}"
+
+    # Hard cap: prevent exponential agent explosion at depth 3+
+    MAX_NEST_DEPTH = 3
+    if nest_level >= MAX_NEST_DEPTH:
+        agent_complete(label, f"[Agent nest limit reached at depth {nest_level}]")
+        return f"[Agent nest limit reached at depth {nest_level}]"
 
     task = input_data.get("task", "")
 
@@ -651,7 +792,9 @@ async def run_agent(
             session=agent_session,
             registry=registry,
             system_prompt=get_system_prompt(cwd),
-            max_tool_rounds=80,
+            max_tool_rounds=max_tool_rounds,
+            skip_planning=True,
+            nest_level=nest_level + 1,
         )
 
         result_text = "(Agent completed without text output)"

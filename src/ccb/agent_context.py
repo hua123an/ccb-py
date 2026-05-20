@@ -32,6 +32,11 @@ _agent_label: contextvars.ContextVar[str] = contextvars.ContextVar(
     "ccb_agent_label", default=""
 )
 
+# Active session ID for the current asyncio task.
+_current_session_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "ccb_current_session_id", default=""
+)
+
 
 def is_inside_agent() -> bool:
     return _inside_agent.get()
@@ -39,6 +44,14 @@ def is_inside_agent() -> bool:
 
 def current_agent_label() -> str:
     return _agent_label.get()
+
+
+def current_session_id() -> str:
+    return _current_session_id.get()
+
+
+def set_current_session_id(sess_id: str) -> None:
+    _current_session_id.set(sess_id)
 
 
 def enter_agent(label: str = "") -> None:
@@ -53,3 +66,4 @@ def enter_agent(label: str = "") -> None:
     _inside_agent.set(True)
     if label:
         _agent_label.set(label)
+

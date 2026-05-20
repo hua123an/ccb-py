@@ -40,6 +40,13 @@ class FileReadTool(Tool):
         except Exception as e:
             return ToolResult(output=f"Error reading file: {e}", is_error=True)
 
+        # Swarm Soft-Interrupt: Subscribe active session to this file
+        from ccb.agent_context import current_session_id
+        sess_id = current_session_id()
+        if sess_id:
+            from ccb.swarm_broker import SoftInterruptBroker
+            SoftInterruptBroker.get_instance().subscribe(str(p.resolve()), sess_id)
+
         lines = content.splitlines(keepends=True)
         offset = input.get("offset")
         limit = input.get("limit")
@@ -84,6 +91,18 @@ class FileWriteTool(Tool):
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content)
+
+            # Swarm Soft-Interrupt: Publish modification event
+            from ccb.agent_context import current_session_id
+            sess_id = current_session_id()
+            if sess_id:
+                from ccb.swarm_broker import SoftInterruptBroker
+                await SoftInterruptBroker.get_instance().publish_file_change(
+                    actor_id=sess_id,
+                    file_path=str(p.resolve()),
+                    diff_summary=f"Wrote/overwrote file with {len(content)} characters."
+                )
+
             return ToolResult(output=f"Wrote {len(content)} chars to {p}")
         except Exception as e:
             return ToolResult(output=f"Error writing file: {e}", is_error=True)
@@ -156,6 +175,19 @@ class FileEditTool(Tool):
                 parts.append(f"-{lines_removed}")
             if replace_all and count > 1:
                 parts.append(f"({count} replacements)")
+
+            # Swarm Soft-Interrupt: Publish modification event
+            from ccb.agent_context import current_session_id
+            sess_id = current_session_id()
+            if sess_id:
+                from ccb.swarm_broker import SoftInterruptBroker
+                summary = " ".join(parts[1:])
+                await SoftInterruptBroker.get_instance().publish_file_change(
+                    actor_id=sess_id,
+                    file_path=str(p.resolve()),
+                    diff_summary=f"Edited file: {summary}"
+                )
+
             return ToolResult(output=" ".join(parts))
         except Exception as e:
             return ToolResult(output=f"Error writing file: {e}", is_error=True)
